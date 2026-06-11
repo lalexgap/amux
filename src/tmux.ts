@@ -62,6 +62,19 @@ export function configureAgentSession(session: string): void {
   tmux("set-option", "-t", `=${session}:`, "mouse", "on");
   tmux("bind-key", "-T", "agentmgr", "WheelUpPane", "copy-mode", "-e");
   tmux("bind-key", "-T", "agentmgr", "PPage", "copy-mode", "-eu");
+
+  // Plain click on a URL opens it; any other click is forwarded to the app
+  // untouched. Word separators are tuned so a URL reads as one word without
+  // swallowing wrapping quotes/brackets. (OSC 8 hyperlinks — underlined file
+  // paths with hidden targets — can only be followed by the terminal itself:
+  // cmd/shift-click.)
+  tmux("set-option", "-t", `=${session}:`, "word-separators", " \t'\"()[]{}<>");
+  tmux(
+    "bind-key", "-T", "agentmgr", "MouseDown1Pane",
+    "if-shell", "-F", "-t=", "#{m|r:^https?://,#{mouse_word}}",
+    `run-shell -b "open '#{mouse_word}'"`,
+    "send-keys -M",
+  );
 }
 
 // send-keys targets a pane: the `=` exact-match prefix only resolves there
