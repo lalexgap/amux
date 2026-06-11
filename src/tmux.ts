@@ -53,9 +53,15 @@ export function configureAgentSession(session: string): void {
   tmux("set-option", "-t", `=${session}:`, "key-table", "agentmgr");
   tmux("set-option", "-t", `=${session}:`, "set-titles", "on");
   tmux("set-option", "-t", `=${session}:`, "set-titles-string", session.slice(SESSION_PREFIX.length));
-  // Text selection stays terminal-native (hold Shift or Option while
-  // dragging, depending on terminal) — tmux mouse mode was tried and
-  // reverted: auto-copy-on-release felt too magic.
+
+  // Wheel-up scrolls back through the session's scrollback; wheeling back to
+  // the bottom returns to live (-e). Mouse mode is needed for tmux to see
+  // wheel events at all, but ONLY the wheel is bound — no drag/click
+  // interception, no auto-copy. Copying is terminal-native: Shift-drag
+  // (Option in iTerm2/Terminal.app), then ⌘C.
+  tmux("set-option", "-t", `=${session}:`, "mouse", "on");
+  tmux("bind-key", "-T", "agentmgr", "WheelUpPane", "copy-mode", "-e");
+  tmux("bind-key", "-T", "agentmgr", "PPage", "copy-mode", "-eu");
 }
 
 // send-keys targets a pane: the `=` exact-match prefix only resolves there

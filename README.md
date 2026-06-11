@@ -55,9 +55,9 @@ am watch                 # live status table, fed by the daemon
 am daemon status         # the daemon is auto-started by `am new`
 ```
 
-### Copying text
+### Scrolling and copying text
 
-Hold **Shift** (Ghostty, Alacritty, Kitty) or **Option** (iTerm2, Terminal.app) while dragging to select text natively, then ⌘C as usual. The modifier is needed because Claude Code enables mouse reporting, which otherwise captures the drag. To grab an agent's screen without attaching: `tmux capture-pane -t 'agentmgr-<name>:' -p | pbcopy`.
+Scroll with the mouse wheel — wheeling up enters tmux scrollback, wheeling back down to the bottom returns to the live view (`Page Up` works too, `q`/`Esc` to bail out). For copying, hold **Shift** (Ghostty, Alacritty, Kitty) or **Option** (iTerm2, Terminal.app) while dragging to select text natively, then ⌘C as usual — the modifier is needed because the wheel handling puts the terminal in mouse mode. To grab an agent's screen without attaching: `tmux capture-pane -t 'agentmgr-<name>:' -p | pbcopy`.
 
 ### Leaving an agent without killing it
 
