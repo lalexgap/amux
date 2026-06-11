@@ -21,10 +21,11 @@ import { runForegroundDaemon } from "./daemon";
 const HELP = `am — manage and jump between Claude Code agents
 
 usage:
-  am                          interactive picker: filter, enter to jump, ctrl-n new
-  am ui                       persistent split view: sidebar + live agent pane
-                              (scrolling previews agents, enter/→ locks in,
-                               ctrl-q back to sidebar, esc detach, ctrl-c quit)
+  am                          split view: sidebar + live agent pane
+                              (scrolling previews agents, enter/→ locks input
+                               into the pane, ctrl-q back to the sidebar,
+                               ctrl-n new, esc detach, ctrl-c quit)
+  am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path | --worktree branch]
@@ -161,6 +162,10 @@ async function main(): Promise<void> {
 
   switch (command) {
     case undefined:
+    case "ui":
+      uiCommand();
+      break;
+    case "pick":
       await pickerFlow();
       break;
     case "new":
@@ -220,9 +225,6 @@ async function main(): Promise<void> {
       break;
     case "watch":
       await watchCommand();
-      break;
-    case "ui":
-      uiCommand();
       break;
     case "__sidebar":
       await sidebarCommand();

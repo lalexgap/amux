@@ -44,10 +44,11 @@ am new triage --resume                            # adopt an existing conversati
                                                   # (opens Claude's session picker;
                                                   #  --resume <id> / --continue also work)
 
-am                       # interactive picker → jump
-am ui                    # persistent split view: sidebar + live agent pane
-                         # (scrolling previews agents, enter/→ locks in,
-                         #  ctrl-q back to sidebar, esc detach, ctrl-c quit)
+am                       # split view: sidebar + live agent pane
+                         # (scrolling previews agents, enter/→ locks input
+                         #  into the pane, ctrl-q back to the sidebar,
+                         #  esc detach, ctrl-c quit)
+am pick                  # classic fullscreen picker (enter attaches)
 am j api                 # jump by prefix
 am -                     # jump back to the previous agent
 am ls                    # status table (--json for scripting)

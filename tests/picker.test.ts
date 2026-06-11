@@ -23,6 +23,11 @@ describe("splitKeys", () => {
     expect(splitKeys("\x1b")).toEqual(["\x1b"]);
     expect(splitKeys("\r\n")).toEqual(["\r"]);
   });
+
+  test("application-mode (SS3) arrows normalize to CSI form", () => {
+    expect(splitKeys("\x1bOC")).toEqual(["\x1b[C"]);
+    expect(splitKeys("\x1bOA\x1bOB")).toEqual(["\x1b[A", "\x1b[B"]);
+  });
 });
 
 describe("clipAnsi", () => {

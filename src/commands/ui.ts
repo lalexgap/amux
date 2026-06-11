@@ -28,14 +28,39 @@ function messageCommand(message: string): string {
   return `printf '\\n\\n   %s\\n' ${shQuote(message)}; sleep 86400000`;
 }
 
-function rightPaneId(): string | null {
+function paneIdWhere(atLeft: "0" | "1"): string | null {
   const result = tmux("list-panes", "-t", hubTarget(), "-F", "#{pane_id} #{pane_at_left}");
   if (result.exitCode !== 0) return null;
   for (const line of result.stdout.trim().split("\n")) {
-    const [id, atLeft] = line.split(" ");
-    if (id && atLeft === "0") return id;
+    const [id, left] = line.split(" ");
+    if (id && left === atLeft) return id;
   }
   return null;
+}
+
+const rightPaneId = (): string | null => paneIdWhere("0");
+const sidebarPaneId = (): string | null => paneIdWhere("1");
+
+function sidebarShellCommand(): string {
+  return `${shQuote(process.execPath)} ${shQuote(cliEntrypoint())} __sidebar`;
+}
+
+// A lingering hub keeps running whatever sidebar build it was started with —
+// respawn the sidebar on reattach so `am ui` always runs the current code.
+function refreshSidebar(): void {
+  const pane = sidebarPaneId();
+  if (pane) {
+    tmux("respawn-pane", "-k", "-t", pane, sidebarShellCommand());
+    tmux("resize-pane", "-t", pane, "-x", String(SIDEBAR_WIDTH));
+    tmux("select-pane", "-t", pane);
+    return;
+  }
+  // Sidebar pane got closed somehow: re-split it to the left of the agent pane.
+  const right = rightPaneId();
+  if (!right) return;
+  tmux("split-window", "-hb", "-d", "-t", right, "-c", process.cwd(), sidebarShellCommand());
+  const created = sidebarPaneId();
+  if (created) tmux("resize-pane", "-t", created, "-x", String(SIDEBAR_WIDTH));
 }
 
 function ensureRightPane(): string | null {
@@ -48,8 +73,7 @@ function ensureRightPane(): string | null {
 }
 
 export function createHub(): void {
-  const sidebar = `${shQuote(process.execPath)} ${shQuote(cliEntrypoint())} __sidebar`;
-  const result = tmux("new-session", "-d", "-s", HUB_SESSION, "-c", process.cwd(), "-x", "200", "-y", "50", sidebar);
+  const result = tmux("new-session", "-d", "-s", HUB_SESSION, "-c", process.cwd(), "-x", "200", "-y", "50", sidebarShellCommand());
   if (result.exitCode !== 0) throw new Error(`tmux new-session failed: ${result.stderr.trim()}`);
   ensureRightPane();
 
@@ -65,6 +89,7 @@ export function createHub(): void {
 
 export function uiCommand(): void {
   if (!hasSession(HUB_SESSION)) createHub();
+  else refreshSidebar();
   attachOrSwitch(HUB_SESSION);
 }
 

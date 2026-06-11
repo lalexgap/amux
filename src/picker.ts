@@ -46,10 +46,18 @@ export function splitKeys(data: string): string[] {
   const keys: string[] = [];
   for (let i = 0; i < data.length; ) {
     if (data[i] === "\x1b") {
-      const match = /^\x1b\[[0-9;]*[A-Za-z~]/.exec(data.slice(i));
-      if (match) {
-        keys.push(match[0]);
-        i += match[0].length;
+      const csi = /^\x1b\[[0-9;]*[A-Za-z~]/.exec(data.slice(i));
+      if (csi) {
+        keys.push(csi[0]);
+        i += csi[0].length;
+        continue;
+      }
+      // SS3 cursor keys (application mode: ESC O A..D) → CSI form, so the
+      // rest of the picker only ever sees one arrow encoding.
+      const ss3 = /^\x1bO([A-D])/.exec(data.slice(i));
+      if (ss3) {
+        keys.push(`\x1b[${ss3[1]}`);
+        i += 3;
         continue;
       }
       keys.push("\x1b");
@@ -307,7 +315,14 @@ export async function pick(
     const onData = (data: Buffer) => {
       for (const key of splitKeys(data.toString())) {
         if (finished) return;
-        handleKey(key);
+        // A throwing handler must not crash the picker process — in
+        // persistent mode that would take the whole sidebar pane down.
+        try {
+          handleKey(key);
+        } catch (error) {
+          feedback = (error as Error).message;
+          render();
+        }
       }
     };
 
