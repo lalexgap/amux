@@ -1,5 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import { scrubNestedSessionEnv } from "../src/commands/new";
+import { conversationArgs, scrubNestedSessionEnv } from "../src/commands/new";
+
+describe("conversationArgs", () => {
+  const base = { name: "x" };
+
+  test("defaults to a fresh conversation", () => {
+    expect(conversationArgs(base)).toEqual([]);
+  });
+
+  test("--resume with an id and --continue map through", () => {
+    expect(conversationArgs({ ...base, resume: "abc-123" })).toEqual(["--resume", "abc-123"]);
+    expect(conversationArgs({ ...base, continue: true })).toEqual(["--continue"]);
+  });
+
+  test("bare --resume opens the picker, but not with -m", () => {
+    expect(conversationArgs({ ...base, resume: true })).toEqual(["--resume"]);
+    expect(() => conversationArgs({ ...base, resume: true, message: "hi" })).toThrow(/session id/);
+  });
+
+  test("--resume and --continue conflict", () => {
+    expect(() => conversationArgs({ ...base, resume: "abc", continue: true })).toThrow(/mutually exclusive/);
+  });
+});
 
 describe("scrubNestedSessionEnv", () => {
   test("wraps the command in env -u for the CLAUDE_CODE_* family", () => {

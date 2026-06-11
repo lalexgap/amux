@@ -27,6 +27,9 @@ bun link
 am new api-refactor -m "refactor the api layer"   # spawn in current dir
 am new bugfix --dir ~/code/other-repo             # spawn elsewhere
 am new perf --worktree perf-tuning                # spawn in a fresh git worktree
+am new triage --resume                            # adopt an existing conversation
+                                                  # (opens Claude's session picker;
+                                                  #  --resume <id> / --continue also work)
 
 am                       # interactive picker → jump
 am j api                 # jump by prefix

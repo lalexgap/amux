@@ -23,6 +23,9 @@ usage:
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path | --worktree branch]
                               spawn a new agent in tmux
+  am new <name> --resume [session-id] | --continue
+                              spawn an agent from an existing conversation
+                              (bare --resume opens Claude's session picker)
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
@@ -41,6 +44,7 @@ interface ParsedArgs {
 }
 
 const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree"]);
+const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
@@ -53,6 +57,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         const value = argv[++i];
         if (value === undefined) throw new Error(`flag --${key} requires a value`);
         flags[key] = value;
+      } else if (OPTIONAL_VALUE_FLAGS.has(key)) {
+        const next = argv[i + 1];
+        flags[key] = next !== undefined && !next.startsWith("-") ? argv[++i]! : true;
       } else {
         flags[key] = true;
       }
@@ -110,6 +117,8 @@ async function main(): Promise<void> {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
+        resume: args.flags.resume as string | boolean | undefined,
+        continue: !!args.flags.continue,
       });
       break;
     case "resume":

@@ -67,6 +67,24 @@ export interface NewOptions {
   message?: string;
   dir?: string;
   worktree?: string;
+  // Adopt an existing Claude conversation: a session id, or `true` to open
+  // Claude Code's interactive session picker inside the new agent.
+  resume?: string | boolean;
+  continue?: boolean;
+}
+
+export function conversationArgs(opts: NewOptions): string[] {
+  if (opts.resume && opts.continue) throw new Error("--resume and --continue are mutually exclusive");
+  if (opts.resume === true) {
+    if (opts.message) {
+      // `claude --resume "msg"` would parse the message as a session id.
+      throw new Error("-m needs a session id: use --resume <session-id>, or drop -m to pick interactively");
+    }
+    return ["--resume"];
+  }
+  if (typeof opts.resume === "string") return ["--resume", opts.resume];
+  if (opts.continue) return ["--continue"];
+  return [];
 }
 
 export async function newCommand(opts: NewOptions): Promise<void> {
@@ -98,7 +116,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
 
-  const command = ["claude", "--settings", settingsFile];
+  const command = ["claude", "--settings", settingsFile, ...conversationArgs(opts)];
   if (opts.message) command.push(opts.message);
 
   newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(command) });
