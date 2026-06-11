@@ -272,7 +272,7 @@ async function main(): Promise<void> {
       runForegroundDaemon();
       return; // keep the process alive serving the socket
     case "__click":
-      clickCommand(args.positional[0] ?? "", Number(args.positional[1] ?? -1));
+      clickCommand(args.positional[0] ?? "", Number(args.positional[1] ?? -1), Number(args.positional[2] ?? -1));
       break;
     case "__deliver":
       await deliverCommand(requirePositional(args, 0, "agent name"));

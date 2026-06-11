@@ -23,6 +23,11 @@ describe("extractUrlAt", () => {
     expect(extractUrlAt("see https://x.dev/p.", 19)).toBeNull();
   });
 
+  test("sheds trailing backslashes (quoting artifacts must never open)", () => {
+    expect(extractUrlAt("https://x.dev/study\\", 5)).toBe("https://x.dev/study");
+    expect(extractUrlAt("https://x.dev/study\\.", 5)).toBe("https://x.dev/study");
+  });
+
   test("dashes, queries, and fragments stay part of the URL", () => {
     const long = "https://github.com/lalexgap/agent-manager/pull/12#issuecomment-99";
     expect(extractUrlAt(long, 50)).toBe(long);
