@@ -1,3 +1,5 @@
+import { cliEntrypoint } from "./settings";
+
 export const SESSION_PREFIX = "agentmgr-";
 
 export function sessionName(agent: string): string {
@@ -64,16 +66,19 @@ export function configureAgentSession(session: string): void {
   tmux("bind-key", "-T", "agentmgr", "PPage", "copy-mode", "-eu");
 
   // Plain click on a URL opens it; any other click is forwarded to the app
-  // untouched. Word separators are tuned so a URL reads as one word without
-  // swallowing wrapping quotes/brackets. (OSC 8 hyperlinks — underlined file
-  // paths with hidden targets — can only be followed by the terminal itself:
+  // untouched. mouse_word is useless here (tmux's separators split URLs and
+  // per-session overrides don't reach the format), so lines that contain a
+  // URL hand the whole line + click column to `am __click`, which extracts
+  // the URL spanning that column. #{q:} shell-quotes the line so pane content
+  // can't inject commands. (OSC 8 hyperlinks — underlined file paths with
+  // hidden targets — can only be followed by the terminal itself:
   // cmd/shift-click.)
-  tmux("set-option", "-t", `=${session}:`, "word-separators", " \t'\"()[]{}<>");
+  const clickHandler = `run-shell -b "${process.execPath} ${cliEntrypoint()} __click \\"#{q:mouse_line}\\" #{mouse_x}"`;
   tmux(
     "bind-key", "-T", "agentmgr", "MouseDown1Pane",
-    "if-shell", "-F", "-t=", "#{m|r:^https?://,#{mouse_word}}",
-    `run-shell -b "open '#{mouse_word}'"`,
-    "send-keys -M",
+    "if-shell", "-F", "-t=", "#{m|r:https?://,#{mouse_line}}",
+    clickHandler,
+    "send-keys -M -t=",
   );
 }
 

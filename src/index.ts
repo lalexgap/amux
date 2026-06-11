@@ -12,6 +12,7 @@ import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
+import { clickCommand } from "./commands/click";
 import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
@@ -270,6 +271,9 @@ async function main(): Promise<void> {
     case "__daemon":
       runForegroundDaemon();
       return; // keep the process alive serving the socket
+    case "__click":
+      clickCommand(args.positional[0] ?? "", Number(args.positional[1] ?? -1));
+      break;
     case "__deliver":
       await deliverCommand(requirePositional(args, 0, "agent name"));
       break;
