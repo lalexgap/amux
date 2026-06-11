@@ -1,4 +1,4 @@
-import { listAgents, readAgent, recordAttached } from "../state";
+import { agentProvider, listAgents, readAgent, recordAttached } from "../state";
 import { attachOrSwitch, hasSession, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
@@ -137,15 +137,20 @@ export async function sidebarCommand(): Promise<void> {
     return agents.map((a) => {
       const status = displayStatus(a);
       const queued = queueDepth(a.name);
+      const provider = agentProvider(a);
       return {
         name: a.name,
         label: `${STATUS_ICONS[status]} ${a.name}`,
-        right: queued > 0 ? `${status} ${queued}q` : status,
+        // Claude is the default; only codex agents get tagged in the list.
+        right: [provider === "codex" ? "codex" : "", status, queued > 0 ? `${queued}q` : ""]
+          .filter(Boolean)
+          .join(" "),
         // shortenHome: a raw /Users/... prefix would make filters like
         // "ser" match every agent.
-        search: `${a.task ?? ""} ${shortenHome(a.dir)}`,
+        search: `${a.task ?? ""} ${shortenHome(a.dir)} ${provider}`,
         meta: [
           `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
+          `provider ${provider}`,
           `dir      ${shortenHome(a.dir)}`,
           ...(a.worktreeBranch ? [`branch   ${a.worktreeBranch}`] : []),
           ...(a.task ? [`task     ${a.task}`] : []),

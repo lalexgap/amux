@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { listAgents, readAgent, resolveAgent } from "./state";
+import { agentProvider, listAgents, readAgent, resolveAgent } from "./state";
 import { queueDepth } from "./queue";
 import { pick } from "./picker";
 import { newCommand } from "./commands/new";
@@ -108,13 +108,17 @@ async function pickerFlow(): Promise<void> {
     return agents.map((a) => {
       const status = displayStatus(a);
       const queued = queueDepth(a.name);
+      const provider = agentProvider(a);
       return {
         name: a.name,
         label: `${STATUS_ICONS[status]} ${a.name}`,
-        right: queued > 0 ? `${status} · ${queued} queued` : status,
-        search: `${a.task ?? ""} ${shortenHome(a.dir)}`,
+        right: [provider === "codex" ? "codex" : "", status, queued > 0 ? `· ${queued} queued` : ""]
+          .filter(Boolean)
+          .join(" "),
+        search: `${a.task ?? ""} ${shortenHome(a.dir)} ${provider}`,
         meta: [
           `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
+          `provider ${provider}`,
           `dir      ${shortenHome(a.dir)}`,
           ...(a.worktreeBranch ? [`branch   ${a.worktreeBranch}`] : []),
           ...(a.task ? [`task     ${a.task}`] : []),

@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { listAgents, type AgentState } from "../state";
+import { agentProvider, listAgents, type AgentState, type Provider } from "../state";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession } from "../tmux";
 
@@ -57,6 +57,7 @@ export function shortenHome(path: string): string {
 export interface AgentRow {
   name: string;
   status: DisplayStatus;
+  provider: Provider;
   queued: number;
   updatedAt: string;
   dir: string;
@@ -66,6 +67,7 @@ export function agentRows(): AgentRow[] {
   return listAgents().map((a) => ({
     ...a,
     status: displayStatus(a),
+    provider: agentProvider(a),
     queued: queueDepth(a.name),
   }));
 }
@@ -74,11 +76,11 @@ export function formatRows(rows: AgentRow[]): string[] {
   if (rows.length === 0) return ["no agents — create one with `am new <name>`"];
   const nameWidth = Math.max(4, ...rows.map((r) => r.name.length));
   const statusWidth = Math.max(6, ...rows.map((r) => r.status.length));
-  const lines = [`  ${"NAME".padEnd(nameWidth)}  ${"STATUS".padEnd(statusWidth)}  QUEUED  ACTIVITY  DIR`];
+  const lines = [`  ${"NAME".padEnd(nameWidth)}  ${"STATUS".padEnd(statusWidth)}  AGENT   QUEUED  ACTIVITY  DIR`];
   for (const r of rows) {
     const queued = r.queued > 0 ? String(r.queued) : "–";
     lines.push(
-      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(statusWidth)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
+      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(statusWidth)}  ${r.provider.padEnd(6)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
     );
   }
   return lines;
