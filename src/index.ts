@@ -10,6 +10,7 @@ import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand } from "./commands/resume";
+import { capturePane } from "./tmux";
 import { daemonCommand } from "./commands/daemon";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
@@ -112,6 +113,11 @@ async function pickerFlow(): Promise<void> {
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
+    },
+    preview: (name) => {
+      const agent = readAgent(name);
+      if (!agent) return [];
+      return capturePane(agent.tmuxSession) ?? [`(no live session — ${displayStatus(agent)})`];
     },
   });
   if (chosen) jumpCommand(chosen);

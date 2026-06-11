@@ -8,7 +8,13 @@ $ am
   ⚠ bugfix-381     needs-attention
   ○ docs-pass      idle
   (type to filter · ↑/↓ · enter jumps · ctrl-x stop · ctrl-d remove · esc)
+  ──────────────────────────────── api-refactor
+  ⏺ Updating src/api/client.ts…
+  ✻ Churning (12s · 8.2k tokens)
 ```
+
+The picker shows a live preview of the highlighted agent's screen, refreshed
+every second — peek at what each agent is doing without attaching.
 
 ## Install
 

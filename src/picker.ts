@@ -7,7 +7,16 @@ export interface PickerHandlers {
   // Each returns a feedback message shown in the picker footer.
   stop?: (name: string) => string;
   remove?: (name: string) => string;
+  // Live pane content for the highlighted agent, shown under the list.
+  preview?: (name: string) => string[];
 }
+
+export function clipLine(line: string, width: number): string {
+  return line.length > width ? line.slice(0, Math.max(0, width - 1)) + "…" : line;
+}
+
+const PREVIEW_MAX_LINES = 14;
+const REFRESH_MS = 1000;
 
 const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
@@ -37,6 +46,8 @@ export async function pick(
     if (renderedLines > 0) out(`\x1b[${renderedLines}A`);
     const matches = filtered();
     if (cursor >= matches.length) cursor = Math.max(0, matches.length - 1);
+    const cols = process.stdout.columns ?? 80;
+    const rows = process.stdout.rows ?? 24;
 
     const footer = confirmRemove
       ? `\x1b[31mremove "${confirmRemove}"? ctrl-d again to confirm\x1b[0m`
@@ -46,10 +57,25 @@ export async function pick(
 
     const lines = [
       `filter: ${filter}\x1b[0m`,
-      ...matches.map((item, i) => (i === cursor ? `\x1b[7m❯ ${item.label}\x1b[0m` : `  ${item.label}`)),
+      ...matches.map((item, i) =>
+        i === cursor ? `\x1b[7m❯ ${clipLine(item.label, cols - 3)}\x1b[0m` : `  ${clipLine(item.label, cols - 3)}`,
+      ),
       ...(matches.length === 0 ? ["  (no matches)"] : []),
       footer,
     ];
+
+    const selected = matches[cursor];
+    if (handlers.preview && selected) {
+      // Leave one row of headroom: overflowing the terminal height would
+      // scroll and break the cursor-up redraw math.
+      const available = Math.min(PREVIEW_MAX_LINES, rows - 1 - lines.length - 1);
+      if (available > 0) {
+        const content = handlers.preview(selected.name).slice(-available);
+        lines.push(`\x1b[2m${"─".repeat(Math.min(cols - 1, 60))} ${selected.name}\x1b[0m`);
+        for (const line of content) lines.push(`\x1b[2m${clipLine(line, cols - 1)}\x1b[0m`);
+      }
+    }
+
     // Pad with blank lines so shrinking the match list leaves no stale rows.
     while (lines.length < renderedLines) lines.push("");
     out(lines.map((l) => CLEAR_LINE + "\r" + l).join("\n") + "\n");
@@ -60,6 +86,12 @@ export async function pick(
   process.stdin.resume();
   out(HIDE_CURSOR);
   render();
+
+  // Keep statuses, queue depths, and the preview live while the picker is open.
+  const refresh = setInterval(() => {
+    items = load();
+    render();
+  }, REFRESH_MS);
 
   const result = await new Promise<string | null>((resolve) => {
     const runAction = (handler: (name: string) => string) => {
@@ -96,6 +128,7 @@ export async function pick(
     };
 
     const finish = (value: string | null) => {
+      clearInterval(refresh);
       process.stdin.off("data", onData);
       process.stdin.setRawMode(false);
       process.stdin.pause();

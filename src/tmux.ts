@@ -58,6 +58,14 @@ export function sendEscape(session: string): void {
   tmux("send-keys", "-t", paneTarget(session), "Escape");
 }
 
+export function capturePane(session: string): string[] | null {
+  const result = tmux("capture-pane", "-t", paneTarget(session), "-p");
+  if (result.exitCode !== 0) return null;
+  const lines = result.stdout.split("\n");
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop();
+  return lines;
+}
+
 export function insideTmux(): boolean {
   return !!process.env.TMUX;
 }

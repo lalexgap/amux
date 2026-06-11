@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { conversationArgs, scrubNestedSessionEnv } from "../src/commands/new";
+import { clipLine } from "../src/picker";
+
+describe("clipLine", () => {
+  test("passes short lines through and clips long ones with an ellipsis", () => {
+    expect(clipLine("short", 10)).toBe("short");
+    expect(clipLine("exactly-10", 10)).toBe("exactly-10");
+    expect(clipLine("definitely too long", 10)).toBe("definitel…");
+  });
+});
 
 describe("conversationArgs", () => {
   const base = { name: "x" };
