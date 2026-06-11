@@ -38,11 +38,16 @@ am send api --now "prefer the v2 endpoint" # typed in immediately (steers curren
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 
 am queue api             # show pending messages (--clear to drop them)
+am resume api            # restart an exited agent, resuming its conversation
 am rm api                # kill session + state (--clean also removes the worktree)
 
 am watch                 # live status table, fed by the daemon
 am daemon status         # the daemon is auto-started by `am new`
 ```
+
+### Leaving an agent without killing it
+
+Inside an agent's session, detach with **`ctrl-b d`** (tmux's detach binding) — the agent keeps working in the background. `ctrl-b s` shows a session picker and `ctrl-b (` / `)` cycle sessions if you'd rather hop straight to another agent. Exiting Claude Code itself (`/exit` or ctrl-d twice) ends the session; the agent shows as `exited` in `am ls` and can be brought back with `am resume`, which reopens the same conversation (hooks record Claude's session id).
 
 ## How it works
 

@@ -9,6 +9,7 @@ import { queueCommand } from "./commands/queue";
 import { rmCommand } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
+import { resumeCommand } from "./commands/resume";
 import { daemonCommand } from "./commands/daemon";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
@@ -22,6 +23,7 @@ usage:
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path | --worktree branch]
                               spawn a new agent in tmux
+  am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
@@ -108,6 +110,11 @@ async function main(): Promise<void> {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
+      });
+      break;
+    case "resume":
+      await resumeCommand(requirePositional(args, 0, "agent name"), {
+        message: (args.flags.m ?? args.flags.message) as string | undefined,
       });
       break;
     case "ls":

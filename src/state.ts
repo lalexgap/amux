@@ -18,6 +18,9 @@ export interface AgentState {
   worktreePath?: string;
   worktreeBranch?: string;
   repoRoot?: string;
+  // Claude Code conversation id, captured from hook payloads — lets
+  // `am resume` reopen the exact conversation after the session exits.
+  claudeSessionId?: string;
   createdAt: string;
   updatedAt: string;
 }

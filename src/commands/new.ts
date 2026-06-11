@@ -30,6 +30,38 @@ function createWorktree(name: string, branch: string): { path: string; repoRoot:
   return { path, repoRoot };
 }
 
+export function agentEnv(name: string): Record<string, string> {
+  return {
+    AGENTMGR_AGENT: name,
+    ...(process.env.AGENTMGR_HOME ? { AGENTMGR_HOME: process.env.AGENTMGR_HOME } : {}),
+  };
+}
+
+// When `am new` runs inside a Claude Code session (or the tmux server was
+// started from one), spawned agents inherit the CLAUDE_CODE_* family and
+// Claude Code treats them as nested child sessions — which silently disables
+// conversation persistence, breaking `am resume`. Always launch claude
+// through `env -u` for that family.
+const NESTED_SESSION_VARS = [
+  "CLAUDECODE",
+  "CLAUDE_EFFORT",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_SSE_PORT",
+];
+
+export function scrubNestedSessionEnv(command: string[]): string[] {
+  const vars = new Set(NESTED_SESSION_VARS);
+  for (const key of Object.keys(process.env)) {
+    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_") || key === "CLAUDE_EFFORT") {
+      vars.add(key);
+    }
+  }
+  return ["env", ...[...vars].sort().flatMap((v) => ["-u", v]), ...command];
+}
+
 export interface NewOptions {
   name: string;
   message?: string;
@@ -42,7 +74,9 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
     throw new Error("agent name must be alphanumeric with dashes/underscores");
   }
-  if (readAgent(name)) throw new Error(`agent "${name}" already exists`);
+  if (readAgent(name)) {
+    throw new Error(`agent "${name}" already exists — restart it with \`am resume ${name}\``);
+  }
   const session = sessionName(name);
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
   if (opts.dir && opts.worktree) throw new Error("--dir and --worktree are mutually exclusive");
@@ -67,12 +101,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const command = ["claude", "--settings", settingsFile];
   if (opts.message) command.push(opts.message);
 
-  newSession({
-    session,
-    dir,
-    env: { AGENTMGR_AGENT: name, ...(process.env.AGENTMGR_HOME ? { AGENTMGR_HOME: process.env.AGENTMGR_HOME } : {}) },
-    command,
-  });
+  newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(command) });
 
   const now = new Date().toISOString();
   const state: AgentState = {
