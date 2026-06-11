@@ -23,8 +23,8 @@ const HELP = `am — manage and jump between Claude Code agents
 usage:
   am                          interactive picker: filter, enter to jump, ctrl-n new
   am ui                       persistent split view: sidebar + live agent pane
-                              (enter shows an agent, ctrl-q toggles focus,
-                               esc detaches, ctrl-c quits)
+                              (scrolling previews agents, enter/→ locks in,
+                               ctrl-q back to sidebar, esc detach, ctrl-c quit)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
   am new <name> [-m msg] [--dir path | --worktree branch]

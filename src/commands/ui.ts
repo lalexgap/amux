@@ -15,15 +15,17 @@ import { readLastAttached } from "../state";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 38;
 
-const HUB_HELP = "↑/↓ · enter shows agent → · ctrl-q back here · ctrl-n new · ctrl-x stop · ctrl-d remove · esc detach · ctrl-c quit";
+const HUB_HELP = "↑/↓ preview · enter/→ lock in · ctrl-q back · ctrl-n new · ctrl-x stop · ctrl-d remove · esc detach · ctrl-c quit";
+const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
   return `=${HUB_SESSION}:`;
 }
 
-// The placeholder keeps the right pane alive until an agent is selected.
-function placeholderCommand(): string {
-  return `sh -c 'printf "\\n\\n   select an agent in the sidebar (enter)\\n   ctrl-q toggles focus between panes\\n"; sleep 86400000'`;
+// A long-lived pane command that just displays a message — used before any
+// agent is shown and for agents without a live session.
+function messageCommand(message: string): string {
+  return `printf '\\n\\n   %s\\n' ${shQuote(message)}; sleep 86400000`;
 }
 
 function rightPaneId(): string | null {
@@ -39,7 +41,8 @@ function rightPaneId(): string | null {
 function ensureRightPane(): string | null {
   const existing = rightPaneId();
   if (existing) return existing;
-  tmux("split-window", "-h", "-d", "-t", `${hubTarget()}.0`, "-c", process.cwd(), placeholderCommand());
+  tmux("split-window", "-h", "-d", "-t", `${hubTarget()}.0`, "-c", process.cwd(),
+    messageCommand("select an agent in the sidebar"));
   tmux("resize-pane", "-t", `${hubTarget()}.0`, "-x", String(SIDEBAR_WIDTH));
   return rightPaneId();
 }
@@ -65,29 +68,43 @@ export function uiCommand(): void {
   attachOrSwitch(HUB_SESSION);
 }
 
-// Point the right pane at an agent's session. Returns footer feedback.
-function showAgent(name: string): string | null {
-  const agent = readAgent(name);
-  if (!agent) return `unknown agent "${name}"`;
-  if (!hasSession(agent.tmuxSession)) return `"${name}" has no live session (${displayStatus(agent)})`;
-  const pane = ensureRightPane();
-  if (!pane) return "could not create the agent pane";
-
-  // The nested attach needs TMUX unset, or the inner tmux refuses to start.
-  // The inner session's status bar is noise inside the pane — turn it off.
-  tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");
-  const attach = `env -u TMUX tmux attach-session -t ${shQuote(`=${agent.tmuxSession}`)}`;
-  const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
-  if (respawned.exitCode !== 0) return `attach failed: ${respawned.stderr.trim()}`;
-  tmux("select-pane", "-t", pane);
-  recordAttached(name);
-  return null;
-}
-
-// The left pane's process: the picker in persistent mode. Runs until ctrl-c,
-// which tears down the whole hub.
+// The left pane's process: the picker in persistent mode. The right pane
+// follows the highlighted agent as you scroll (debounced); enter/→ locks
+// focus into it. Runs until ctrl-c, which tears down the whole hub.
 export async function sidebarCommand(): Promise<void> {
-  let active: string | null = readLastAttached().current ?? null;
+  let shown: string | null = null;
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Point the right pane at an agent. With focus=false (scroll preview) the
+  // sidebar keeps focus; enter/→ pass focus=true to move into the session.
+  const showAgent = (name: string, focus: boolean): string | null => {
+    const agent = readAgent(name);
+    if (!agent) return focus ? `unknown agent "${name}"` : null;
+    const pane = ensureRightPane();
+    if (!pane) return "could not create the agent pane";
+
+    if (!hasSession(agent.tmuxSession)) {
+      shown = null;
+      tmux("respawn-pane", "-k", "-t", pane,
+        messageCommand(`${name}: no live session (${displayStatus(agent)})`));
+      return focus ? `"${name}" has no live session — \`am resume ${name}\`` : null;
+    }
+
+    if (shown !== name) {
+      // The nested attach needs TMUX unset, or the inner tmux refuses to
+      // start. The inner session's status bar is noise inside the pane.
+      tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");
+      const attach = `env -u TMUX tmux attach-session -t ${shQuote(`=${agent.tmuxSession}`)}`;
+      const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
+      if (respawned.exitCode !== 0) return `attach failed: ${respawned.stderr.trim()}`;
+      shown = name;
+    }
+    if (focus) {
+      tmux("select-pane", "-t", pane);
+      recordAttached(name);
+    }
+    return null;
+  };
 
   const load = () => {
     const agents = listAgents();
@@ -97,7 +114,7 @@ export async function sidebarCommand(): Promise<void> {
       const queued = queueDepth(a.name);
       return {
         name: a.name,
-        label: `${STATUS_ICONS[status]}${a.name === active ? "▶" : " "}${a.name.padEnd(nameWidth)}  ${status}${queued > 0 ? ` · ${queued}q` : ""}`,
+        label: `${STATUS_ICONS[status]} ${a.name.padEnd(nameWidth)}  ${status}${queued > 0 ? ` · ${queued}q` : ""}`,
         search: `${a.task ?? ""} ${a.dir}`,
         meta: [
           `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
@@ -111,10 +128,13 @@ export async function sidebarCommand(): Promise<void> {
   };
 
   const handlers: PickerHandlers = {
+    highlight: (name: string) => {
+      clearTimeout(highlightTimer);
+      highlightTimer = setTimeout(() => showAgent(name, false), HIGHLIGHT_DEBOUNCE_MS);
+    },
     select: (name: string) => {
-      const feedback = showAgent(name);
-      if (!feedback) active = name;
-      return feedback;
+      clearTimeout(highlightTimer);
+      return showAgent(name, true);
     },
     stop: (name: string) => {
       const agent = readAgent(name);
@@ -136,7 +156,8 @@ export async function sidebarCommand(): Promise<void> {
     help: HUB_HELP,
   };
 
-  await pick(load, handlers, active ?? undefined);
+  await pick(load, handlers, readLastAttached().current ?? undefined);
   // Only ctrl-c resolves the persistent picker: quit the whole hub with it.
+  clearTimeout(highlightTimer);
   tmux("kill-session", "-t", `=${HUB_SESSION}`);
 }

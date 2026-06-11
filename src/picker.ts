@@ -22,6 +22,10 @@ export interface PickerHandlers {
   // optional footer feedback.
   select?: (name: string) => string | null;
   quit?: () => void;
+  // Fires when the cursor lands on a different item (persistent mode uses
+  // this to make the agent pane follow the scroll). Debouncing is the
+  // handler's job.
+  highlight?: (name: string) => void;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -98,6 +102,11 @@ const SHOW_CURSOR = "\x1b[?25h";
 const ALT_SCREEN_ON = "\x1b[?1049h";
 const ALT_SCREEN_OFF = "\x1b[?1049l";
 const CLEAR_LINE = "\x1b[2K";
+// Autowrap off while the picker owns the screen: a line that overruns the
+// width (e.g. a glyph the terminal draws 2 cells wide) must clip, not wrap —
+// a wrap scrolls the screen and the whole layout jumps.
+const WRAP_OFF = "\x1b[?7l";
+const WRAP_ON = "\x1b[?7h";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 const INVERSE = "\x1b[7m";
@@ -124,12 +133,17 @@ export async function pick(
 
   let filter = "";
   let cursor = Math.max(0, items.findIndex((i) => i.name === initial));
+  // The list reloads every second and agents come and go, so the cursor
+  // follows a NAME, not an index — otherwise a reload silently moves the
+  // cursor (and in persistent mode, the agent pane) to a different agent.
+  let cursorName: string | null = items[cursor]?.name ?? null;
   let feedback: string | null = null;
   let confirmRemove: string | null = null;
   let mode: Mode = "list";
   let newName = "";
   let newTask = "";
   let creating = false;
+  let lastHighlighted: string | null = null;
 
   const out = (s: string) => process.stdout.write(s);
 
@@ -145,8 +159,16 @@ export async function pick(
     const bodyRows = Math.max(1, rows - 1); // last row is the footer
 
     const matches = filtered();
-    if (cursor >= matches.length) cursor = Math.max(0, matches.length - 1);
+    const tracked = cursorName ? matches.findIndex((i) => i.name === cursorName) : -1;
+    if (tracked >= 0) cursor = tracked;
+    else if (cursor >= matches.length) cursor = Math.max(0, matches.length - 1);
     const selected = matches[cursor];
+    cursorName = selected?.name ?? null;
+
+    if (selected && handlers.highlight && selected.name !== lastHighlighted) {
+      lastHighlighted = selected.name;
+      handlers.highlight(selected.name);
+    }
 
     const header: Cell =
       mode === "new-name"
@@ -155,8 +177,19 @@ export async function pick(
           ? { text: `task (optional): ${newTask}▌` }
           : { text: `filter: ${filter}▌` };
 
-    const metaBlock: Cell[] = selected?.meta?.length
-      ? [{ text: "" }, ...selected.meta.map((m): Cell => ({ text: m, style: DIM }))]
+    // The meta block is sized to the largest meta across ALL items, not the
+    // selected one — otherwise the list capacity (and every row below the
+    // header) shifts as the cursor moves between agents with more or fewer
+    // detail lines.
+    const metaHeight = Math.max(0, ...items.map((i) => i.meta?.length ?? 0));
+    const metaBlock: Cell[] = metaHeight
+      ? [
+          { text: "" },
+          ...Array.from({ length: metaHeight }, (_, i): Cell => ({
+            text: selected?.meta?.[i] ?? "",
+            style: DIM,
+          })),
+        ]
       : [];
 
     // Window the list around the cursor so long agent lists stay navigable.
@@ -213,7 +246,7 @@ export async function pick(
   process.stdin.setRawMode(true);
   process.stdin.resume();
   out("\x1b]0;am\x07"); // tab title; agent sessions set their own via tmux set-titles
-  out(ALT_SCREEN_ON + HIDE_CURSOR);
+  out(ALT_SCREEN_ON + HIDE_CURSOR + WRAP_OFF);
   render();
 
   // Keep statuses, queue depths, and the preview live while the picker is open.
@@ -233,7 +266,7 @@ export async function pick(
       process.stdin.off("data", onData);
       process.stdin.setRawMode(false);
       process.stdin.pause();
-      out(ALT_SCREEN_OFF + SHOW_CURSOR);
+      out(WRAP_ON + ALT_SCREEN_OFF + SHOW_CURSOR);
       resolve(value);
     };
 
@@ -316,7 +349,9 @@ export async function pick(
         // esc: in persistent mode hand off to quit (detach) and keep running.
         if (handlers.quit) handlers.quit();
         else return finish(null);
-      } else if (key === "\r" || key === "\n") {
+      } else if (key === "\r" || key === "\n" || (key === "\x1b[C" && !!handlers.select)) {
+        // Enter jumps (or locks into the agent pane in persistent mode,
+        // where → does the same).
         const match = filtered()[cursor];
         if (match) {
           if (!handlers.select) return finish(match.name);
@@ -337,9 +372,11 @@ export async function pick(
         const target = filtered()[cursor];
         if (target && pendingConfirm === target.name) runAction(handlers.remove);
         else if (target) confirmRemove = target.name;
-      } else if (key === "\x1b[A") cursor = Math.max(0, cursor - 1);
-      else if (key === "\x1b[B") cursor = Math.min(filtered().length - 1, cursor + 1);
-      else if (key === "\x7f" || key === "\b") filter = filter.slice(0, -1);
+      } else if (key === "\x1b[A" || key === "\x1b[B") {
+        const matches = filtered();
+        cursor = key === "\x1b[A" ? Math.max(0, cursor - 1) : Math.min(matches.length - 1, cursor + 1);
+        cursorName = matches[cursor]?.name ?? null;
+      } else if (key === "\x7f" || key === "\b") filter = filter.slice(0, -1);
       else if (key >= " " && !key.startsWith("\x1b")) filter += key;
       render();
     };
