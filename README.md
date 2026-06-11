@@ -57,7 +57,7 @@ am daemon status         # the daemon is auto-started by `am new`
 
 ### Copying text
 
-Just drag — agent sessions run with tmux mouse mode on, so a click-drag selects via tmux (Claude Code's own mouse handling can't swallow it) and releasing copies the selection straight to the macOS clipboard. No modifier keys, no ⌘C. Wheel scrolling still goes to Claude Code. Mouse mode is per-session, so your other tmux sessions are unaffected.
+Hold **Shift** (Ghostty, Alacritty, Kitty) or **Option** (iTerm2, Terminal.app) while dragging to select text natively, then ⌘C as usual. The modifier is needed because Claude Code enables mouse reporting, which otherwise captures the drag. To grab an agent's screen without attaching: `tmux capture-pane -t 'agentmgr-<name>:' -p | pbcopy`.
 
 ### Leaving an agent without killing it
 
