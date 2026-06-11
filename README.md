@@ -1,0 +1,57 @@
+# am — Claude agent manager
+
+A small CLI for running multiple [Claude Code](https://claude.com/claude-code) agents at once and jumping between them fast. Each agent is a real interactive `claude` session in its own tmux session; Claude Code hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle.
+
+```
+$ am
+❯ ● api-refactor   working     2 queued
+  ⚠ bugfix-381     needs-attention
+  ○ docs-pass      idle
+  (type to filter · ↑/↓ · enter jumps · esc cancels)
+```
+
+## Install
+
+Requires [Bun](https://bun.sh), tmux, and Claude Code.
+
+```sh
+git clone https://github.com/lalexgap/agent-manager.git
+cd agent-manager
+bun install
+bun link
+```
+
+## Usage
+
+```sh
+am new api-refactor -m "refactor the api layer"   # spawn in current dir
+am new bugfix --dir ~/code/other-repo             # spawn elsewhere
+am new perf --worktree perf-tuning                # spawn in a fresh git worktree
+
+am                       # interactive picker → jump
+am j api                 # jump by prefix
+am -                     # jump back to the previous agent
+am ls                    # status table (--json for scripting)
+
+am send api "then update the changelog"    # queued; delivered when idle
+am send api --now "prefer the v2 endpoint" # typed in immediately (steers current turn)
+am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
+
+am queue api             # show pending messages (--clear to drop them)
+am rm api                # kill session + state (--clean also removes the worktree)
+```
+
+## How it works
+
+- **tmux**: `am new <name>` starts `claude` inside a detached tmux session named `agentmgr-<name>`. Jumping attaches (or `switch-client`s when you're already inside tmux), so you always get Claude Code's native UI.
+- **Hooks**: agents are launched with `claude --settings ~/.agent-manager/hook-settings.json`, a generated file wiring SessionStart / UserPromptSubmit / Stop / Notification / SessionEnd to `am hook <event>`. Your normal `claude` sessions are untouched. Hooks identify their agent via the `AGENTMGR_AGENT` env var set on the tmux session.
+- **Daemonless queue**: `am send` appends to `~/.agent-manager/queue/<name>.jsonl`. When the agent finishes a turn, its Stop hook pops the next message and types it into the session via `tmux send-keys` — the hook event itself is the scheduler, so there's no background process to keep alive.
+- **Notifications**: when an agent needs your attention (e.g. a permission prompt), the Notification hook fires a macOS notification.
+
+All state lives in `~/.agent-manager/` as plain JSON — easy to inspect, easy to nuke.
+
+## Development
+
+```sh
+bun test
+```

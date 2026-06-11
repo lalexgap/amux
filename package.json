@@ -1,0 +1,16 @@
+{
+  "name": "agent-manager",
+  "version": "0.1.0",
+  "description": "am — a CLI for managing and jumping between Claude Code agents running in tmux",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "am": "src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
