@@ -62,6 +62,22 @@ export function scrubNestedSessionEnv(command: string[]): string[] {
   return ["env", ...[...vars].sort().flatMap((v) => ["-u", v]), ...command];
 }
 
+// Injected via --append-system-prompt so managed agents know they live under
+// am — otherwise "spin up an agent" reaches for the built-in Task tool.
+export function agentSystemPrompt(name: string): string {
+  return `You are running as a managed agent named "${name}" in a tmux session controlled by the \`am\` CLI (agent-manager). Other managed agents may be running in parallel.
+
+When asked to spin up, message, check on, or stop OTHER AGENTS, use the am CLI via Bash — not your built-in Task/subagent tool (keep that for quick scoped subtasks inside this session):
+- am new <name> [-m "task"] [--dir <path> | --worktree <branch>]   (names are global, pick a unique one)
+- am send <name> "msg"          queue a message, delivered when that agent goes idle
+- am send <name> --now "msg"    steer its current turn immediately
+- am interrupt <name> "msg"     abort its turn and redirect it
+- am ls --json                  every agent's status and queue depth
+- am stop <name> · am resume <name> · am rm <name>
+
+Caveat: an agent spawned into a directory Claude Code has never trusted blocks on a trust prompt — it lingers in "starting" with no activity. Unblock it with: tmux send-keys -t 'agentmgr-<name>:' Enter`;
+}
+
 export interface NewOptions {
   name: string;
   message?: string;
@@ -116,7 +132,12 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
 
-  const command = ["claude", "--settings", settingsFile, ...conversationArgs(opts)];
+  const command = [
+    "claude",
+    "--settings", settingsFile,
+    "--append-system-prompt", agentSystemPrompt(name),
+    ...conversationArgs(opts),
+  ];
   if (opts.message) command.push(opts.message);
 
   newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(command) });

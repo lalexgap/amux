@@ -3,7 +3,7 @@ import { resolveAgent, writeAgent } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { writeHookSettings } from "../settings";
 import { ensureDaemon } from "../daemon";
-import { agentEnv, scrubNestedSessionEnv } from "./new";
+import { agentEnv, agentSystemPrompt, scrubNestedSessionEnv } from "./new";
 
 export async function resumeCommand(prefix: string, opts: { message?: string }): Promise<void> {
   const agent = resolveAgent(prefix);
@@ -17,7 +17,11 @@ export async function resumeCommand(prefix: string, opts: { message?: string }):
     console.error("warning: daemon failed to start — falling back to hook-only delivery");
   }
 
-  const command = ["claude", "--settings", settingsFile];
+  const command = [
+    "claude",
+    "--settings", settingsFile,
+    "--append-system-prompt", agentSystemPrompt(agent.name),
+  ];
   // Old state files may predate session-id capture; --continue picks up the
   // most recent conversation in the agent's directory instead.
   if (agent.claudeSessionId) command.push("--resume", agent.claudeSessionId);

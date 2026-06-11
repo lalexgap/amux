@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { conversationArgs, scrubNestedSessionEnv } from "../src/commands/new";
+import { agentSystemPrompt, conversationArgs, scrubNestedSessionEnv } from "../src/commands/new";
+
+describe("agentSystemPrompt", () => {
+  test("names the agent and teaches the am command surface", () => {
+    const prompt = agentSystemPrompt("worker-1");
+    expect(prompt).toContain('"worker-1"');
+    expect(prompt).toContain("am new");
+    expect(prompt).toContain("am ls --json");
+    expect(prompt).toContain("trust prompt");
+  });
+});
 import { clipLine } from "../src/picker";
 
 describe("clipLine", () => {
