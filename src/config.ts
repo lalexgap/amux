@@ -8,11 +8,16 @@ export interface Config {
   // Minimum length of the work stint, in seconds, before idle is
   // notification-worthy — filters out quick conversational replies.
   idleNotifyMinSeconds: number;
+  // Launch agents with Claude Code Remote Control, making them drivable from
+  // claude.ai/code and the Claude mobile app. Per-agent override via
+  // `am new --remote / --no-remote`.
+  remoteControl: boolean;
 }
 
 const DEFAULTS: Config = {
   notifyOnIdle: true,
   idleNotifyMinSeconds: 30,
+  remoteControl: true,
 };
 
 export function loadConfig(): Config {

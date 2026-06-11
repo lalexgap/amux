@@ -28,7 +28,7 @@ usage:
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
-  am new <name> [-m msg] [--dir path | --worktree branch]
+  am new <name> [-m msg] [--dir path | --worktree branch] [--remote | --no-remote]
                               spawn a new agent in tmux and jump into it
                               (--no-jump to stay; non-TTY callers never jump)
   am new <name> --resume [session-id] | --continue
@@ -177,11 +177,13 @@ async function main(): Promise<void> {
         resume: args.flags.resume as string | boolean | undefined,
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
+        remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
       });
       break;
     case "resume":
       await resumeCommand(requirePositional(args, 0, "agent name"), {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
+        remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
       });
       break;
     case "ls":

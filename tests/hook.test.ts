@@ -3,7 +3,7 @@ import { hookEffects } from "../src/commands/hook";
 
 describe("hookEffects", () => {
   test("maps lifecycle events to statuses", () => {
-    expect(hookEffects("session-start", {}).status).toBe("idle");
+    expect(hookEffects("session-start", {})).toMatchObject({ status: "idle", drainQueue: true });
     expect(hookEffects("user-prompt-submit", {}).status).toBe("working");
     expect(hookEffects("session-end", {}).status).toBe("exited");
   });

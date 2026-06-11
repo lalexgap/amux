@@ -42,6 +42,29 @@ describe("conversationArgs", () => {
   });
 });
 
+describe("remoteControlArgs", () => {
+  test("explicit override wins; otherwise config default (on) applies", async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { remoteControlArgs } = await import("../src/commands/new");
+    const { configFile } = await import("../src/paths");
+
+    const home = mkdtempSync(join(tmpdir(), "am-test-"));
+    process.env.AGENTMGR_HOME = home;
+    try {
+      expect(remoteControlArgs(undefined)).toEqual(["--remote-control"]); // config default
+      expect(remoteControlArgs(false)).toEqual([]); // --no-remote
+      writeFileSync(configFile(), JSON.stringify({ remoteControl: false }));
+      expect(remoteControlArgs(undefined)).toEqual([]);
+      expect(remoteControlArgs(true)).toEqual(["--remote-control"]); // --remote beats config
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      delete process.env.AGENTMGR_HOME;
+    }
+  });
+});
+
 describe("scrubNestedSessionEnv", () => {
   test("wraps the command in env -u for the CLAUDE_CODE_* family", () => {
     const wrapped = scrubNestedSessionEnv(["claude", "--settings", "/x.json"]);

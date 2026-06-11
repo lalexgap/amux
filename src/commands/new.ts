@@ -5,6 +5,8 @@ import { readAgent, recordAttached, writeAgent, type AgentState } from "../state
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { writeHookSettings } from "../settings";
 import { ensureDaemon } from "../daemon";
+import { loadConfig } from "../config";
+import { queueAppend } from "../queue";
 
 function git(dir: string, ...args: string[]): { exitCode: number; stdout: string; stderr: string } {
   const result = Bun.spawnSync(["git", "-C", dir, ...args]);
@@ -90,6 +92,8 @@ export interface NewOptions {
   // Attach to the new session after spawning. Defaults to true when run from
   // a terminal; always false for non-TTY callers (agents spawning agents).
   jump?: boolean;
+  // Per-agent remote-control override; undefined = config default.
+  remote?: boolean;
   // Suppress console output (used by the picker, which owns the screen).
   quiet?: boolean;
 }
@@ -106,6 +110,12 @@ export function conversationArgs(opts: NewOptions): string[] {
   if (typeof opts.resume === "string") return ["--resume", opts.resume];
   if (opts.continue) return ["--continue"];
   return [];
+}
+
+// Remote control (claude.ai/code + mobile app) is on by default via config;
+// an explicit per-agent flag wins over the config value.
+export function remoteControlArgs(override: boolean | undefined): string[] {
+  return (override ?? loadConfig().remoteControl) ? ["--remote-control"] : [];
 }
 
 export async function newCommand(opts: NewOptions): Promise<void> {
@@ -137,13 +147,20 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
 
+  // --remote-control goes last: it greedily consumes a following positional
+  // as the remote session's display name — including what was meant to be
+  // the initial prompt. With remote on, the initial message is queued and
+  // delivered by the SessionStart hook instead.
+  const remoteArgs = remoteControlArgs(opts.remote);
   const command = [
     "claude",
     "--settings", settingsFile,
     "--append-system-prompt", agentSystemPrompt(name),
     ...conversationArgs(opts),
   ];
-  if (opts.message) command.push(opts.message);
+  if (opts.message && remoteArgs.length === 0) command.push(opts.message);
+  command.push(...remoteArgs);
+  if (opts.message && remoteArgs.length > 0) queueAppend(name, opts.message);
 
   newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(command) });
 

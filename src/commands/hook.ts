@@ -40,7 +40,10 @@ export interface HookEffects {
 export function hookEffects(event: string, payload: Record<string, unknown>): HookEffects {
   switch (event) {
     case "session-start":
-      return { status: "idle" };
+      // Drain so initial messages queued at spawn time (the remote-control
+      // flag swallows positional prompts) are delivered as soon as the TUI
+      // is up.
+      return { status: "idle", drainQueue: true };
     case "user-prompt-submit":
     case "pre-tool-use":
     case "post-tool-use":
@@ -98,6 +101,7 @@ export async function hookCommand(event: string): Promise<void> {
       // delivery process when it isn't running.
       if (!(await notifyDaemon(name, "stop"))) spawnDeliver(name);
     } else if (
+      event === "stop" &&
       shouldNotifyIdle({
         config: loadConfig(),
         workedSeconds,
