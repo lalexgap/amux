@@ -68,6 +68,12 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
       if (/waiting for .*input/i.test(message)) return { status: "idle" };
       return { status: "needs-attention", notify: message };
     }
+    // Codex's dedicated approval event (PermissionRequest) — unlike Claude's
+    // Notification, it only ever means "waiting on the user".
+    case "permission-request": {
+      const tool = typeof payload.tool_name === "string" ? ` — ${payload.tool_name}` : "";
+      return { status: "needs-attention", notify: `approval requested${tool}` };
+    }
     case "session-end":
       return { status: "exited" };
     default:
@@ -89,7 +95,9 @@ export async function hookCommand(event: string): Promise<void> {
     : 0;
 
   agent.status = effects.status;
-  if (typeof payload.session_id === "string") agent.claudeSessionId = payload.session_id;
+  if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
+  // Codex includes the rollout file path; saves `am transcript` a search.
+  if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;
   if (event === "user-prompt-submit" && !agent.workingSince) {
     agent.workingSince = new Date().toISOString();
   }

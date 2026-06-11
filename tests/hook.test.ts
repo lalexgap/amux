@@ -35,6 +35,14 @@ describe("hookEffects", () => {
     expect(effects.notify).toBeUndefined();
   });
 
+  test("codex permission-request flags needs-attention with the tool name", () => {
+    expect(hookEffects("permission-request", { tool_name: "shell" })).toMatchObject({
+      status: "needs-attention",
+      notify: "approval requested — shell",
+    });
+    expect(hookEffects("permission-request", {}).notify).toBe("approval requested");
+  });
+
   test("unknown event throws", () => {
     expect(() => hookEffects("nope", {})).toThrow(/unknown hook event/);
   });

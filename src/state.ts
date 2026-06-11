@@ -9,18 +9,27 @@ export type AgentStatus =
   | "needs-attention"
   | "exited";
 
+export type Provider = "claude" | "codex";
+
 export interface AgentState {
   name: string;
   status: AgentStatus;
   dir: string;
   tmuxSession: string;
+  // Absent in state files written before multi-provider support → claude.
+  provider?: Provider;
   // Set only for --worktree agents, so `am rm --clean` can remove the worktree.
   worktreePath?: string;
   worktreeBranch?: string;
   repoRoot?: string;
-  // Claude Code conversation id, captured from hook payloads — lets
-  // `am resume` reopen the exact conversation after the session exits.
+  // Conversation/session id, captured from hook payloads — lets `am resume`
+  // reopen the exact conversation after the session exits.
+  sessionId?: string;
+  // Legacy name for sessionId; still read as a fallback.
   claudeSessionId?: string;
+  // Codex reports the rollout file location in hook payloads; saved so
+  // `am transcript` doesn't have to search ~/.codex/sessions for it.
+  transcriptPath?: string;
   // The initial -m message: what this agent is for. Searchable in the picker.
   task?: string;
   // Set when a turn starts, used to measure the work stint for idle
@@ -28,6 +37,14 @@ export interface AgentState {
   workingSince?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export function agentProvider(state: AgentState): Provider {
+  return state.provider ?? "claude";
+}
+
+export function agentSessionId(state: AgentState): string | undefined {
+  return state.sessionId ?? state.claudeSessionId;
 }
 
 function stateFile(name: string): string {

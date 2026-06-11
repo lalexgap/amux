@@ -1,12 +1,22 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir } from "../paths";
-import { readAgent, recordAttached, writeAgent, type AgentState } from "../state";
+import { readAgent, recordAttached, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
-import { writeHookSettings } from "../settings";
 import { ensureDaemon } from "../daemon";
-import { loadConfig } from "../config";
 import { queueAppend } from "../queue";
+import {
+  agentSystemPrompt,
+  buildLaunchCommand,
+  conversationArgs,
+  remoteControlArgs,
+  scrubNestedSessionEnv,
+} from "../providers";
+import { ensureCodexHooks } from "../codexHooks";
+
+// These grew provider-awareness and moved to providers.ts; re-exported so
+// existing imports keep working.
+export { agentSystemPrompt, conversationArgs, remoteControlArgs, scrubNestedSessionEnv };
 
 function git(dir: string, ...args: string[]): { exitCode: number; stdout: string; stderr: string } {
   const result = Bun.spawnSync(["git", "-C", dir, ...args]);
@@ -39,54 +49,14 @@ export function agentEnv(name: string): Record<string, string> {
   };
 }
 
-// When `am new` runs inside a Claude Code session (or the tmux server was
-// started from one), spawned agents inherit the CLAUDE_CODE_* family and
-// Claude Code treats them as nested child sessions — which silently disables
-// conversation persistence, breaking `am resume`. Always launch claude
-// through `env -u` for that family.
-const NESTED_SESSION_VARS = [
-  "CLAUDECODE",
-  "CLAUDE_EFFORT",
-  "CLAUDE_CODE_CHILD_SESSION",
-  "CLAUDE_CODE_ENTRYPOINT",
-  "CLAUDE_CODE_EXECPATH",
-  "CLAUDE_CODE_SESSION_ID",
-  "CLAUDE_CODE_SSE_PORT",
-];
-
-export function scrubNestedSessionEnv(command: string[]): string[] {
-  const vars = new Set(NESTED_SESSION_VARS);
-  for (const key of Object.keys(process.env)) {
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_") || key === "CLAUDE_EFFORT") {
-      vars.add(key);
-    }
-  }
-  return ["env", ...[...vars].sort().flatMap((v) => ["-u", v]), ...command];
-}
-
-// Injected via --append-system-prompt so managed agents know they live under
-// am — otherwise "spin up an agent" reaches for the built-in Task tool.
-export function agentSystemPrompt(name: string): string {
-  return `You are running as a managed agent named "${name}" in a tmux session controlled by the \`am\` CLI (agent-manager). Other managed agents may be running in parallel.
-
-When asked to spin up, message, check on, or stop OTHER AGENTS, use the am CLI via Bash — not your built-in Task/subagent tool (keep that for quick scoped subtasks inside this session):
-- am new <name> [-m "task"] [--dir <path> | --worktree <branch>]   (names are global, pick a unique one)
-- am send <name> "msg"          queue a message, delivered when that agent goes idle
-- am send <name> --now "msg"    steer its current turn immediately
-- am interrupt <name> "msg"     abort its turn and redirect it
-- am ls --json                  every agent's status and queue depth
-- am stop <name> · am resume <name> · am rm <name>
-
-Caveat: an agent spawned into a directory Claude Code has never trusted blocks on a trust prompt — it lingers in "starting" with no activity. Unblock it with: tmux send-keys -t 'agentmgr-<name>:' Enter`;
-}
-
 export interface NewOptions {
   name: string;
   message?: string;
   dir?: string;
   worktree?: string;
-  // Adopt an existing Claude conversation: a session id, or `true` to open
-  // Claude Code's interactive session picker inside the new agent.
+  provider?: Provider;
+  // Adopt an existing conversation: a session id, or `true` to open the
+  // provider's interactive session picker inside the new agent.
   resume?: string | boolean;
   continue?: boolean;
   // Attach to the new session after spawning. Defaults to true when run from
@@ -96,26 +66,6 @@ export interface NewOptions {
   remote?: boolean;
   // Suppress console output (used by the picker, which owns the screen).
   quiet?: boolean;
-}
-
-export function conversationArgs(opts: NewOptions): string[] {
-  if (opts.resume && opts.continue) throw new Error("--resume and --continue are mutually exclusive");
-  if (opts.resume === true) {
-    if (opts.message) {
-      // `claude --resume "msg"` would parse the message as a session id.
-      throw new Error("-m needs a session id: use --resume <session-id>, or drop -m to pick interactively");
-    }
-    return ["--resume"];
-  }
-  if (typeof opts.resume === "string") return ["--resume", opts.resume];
-  if (opts.continue) return ["--continue"];
-  return [];
-}
-
-// Remote control (claude.ai/code + mobile app) is on by default via config;
-// an explicit per-agent flag wins over the config value.
-export function remoteControlArgs(override: boolean | undefined): string[] {
-  return (override ?? loadConfig().remoteControl) ? ["--remote-control"] : [];
 }
 
 export async function newCommand(opts: NewOptions): Promise<void> {
@@ -130,11 +80,15 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
   if (opts.dir && opts.worktree) throw new Error("--dir and --worktree are mutually exclusive");
 
+  const provider = opts.provider ?? "claude";
+
   ensureDirs();
-  const settingsFile = writeHookSettings();
   if (!(await ensureDaemon())) {
     console.error("warning: daemon failed to start — falling back to hook-only delivery");
   }
+
+  let hooksChanged = false;
+  if (provider === "codex") hooksChanged = ensureCodexHooks().changed;
 
   let dir = resolve(opts.dir ?? process.cwd());
   let worktreePath: string | undefined;
@@ -147,22 +101,11 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   if (!existsSync(dir)) throw new Error(`directory does not exist: ${dir}`);
 
-  // --remote-control goes last: it greedily consumes a following positional
-  // as the remote session's display name — including what was meant to be
-  // the initial prompt. With remote on, the initial message is queued and
-  // delivered by the SessionStart hook instead.
-  const remoteArgs = remoteControlArgs(opts.remote);
-  const command = [
-    "claude",
-    "--settings", settingsFile,
-    "--append-system-prompt", agentSystemPrompt(name),
-    ...conversationArgs(opts),
-  ];
-  if (opts.message && remoteArgs.length === 0) command.push(opts.message);
-  command.push(...remoteArgs);
-  if (opts.message && remoteArgs.length > 0) queueAppend(name, opts.message);
+  const plan = buildLaunchCommand(provider, name, opts);
+  // Queue before the session starts so the SessionStart hook finds it.
+  if (plan.deferredMessage) queueAppend(name, plan.deferredMessage);
 
-  newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(command) });
+  newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(plan.command) });
 
   const now = new Date().toISOString();
   const state: AgentState = {
@@ -170,6 +113,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     status: "starting",
     dir,
     tmuxSession: session,
+    provider,
     worktreePath,
     worktreeBranch: opts.worktree,
     repoRoot,
@@ -180,6 +124,11 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   writeAgent(state);
 
   if (!opts.quiet) console.log(`started agent "${name}" in ${dir}`);
+  if (hooksChanged && !opts.quiet) {
+    console.log(
+      `  codex will ask to review am's hooks on startup — choose "Trust all and continue" (one-time; without it status tracking stays blind)`,
+    );
+  }
 
   const jump = opts.jump ?? (!!process.stdout.isTTY && !!process.stdin.isTTY);
   if (jump) {

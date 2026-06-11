@@ -1,6 +1,6 @@
-# am — Claude agent manager
+# am — coding agent manager
 
-A small CLI for running multiple [Claude Code](https://claude.com/claude-code) agents at once and jumping between them fast. Each agent is a real interactive `claude` session in its own tmux session; Claude Code hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle. An idle agent whose screen shows a scheduled wake-up or a running background task is displayed as `waiting` (◐) instead — best-effort, detected from the pane content since hooks carry no such signal.
+A small CLI for running multiple [Claude Code](https://claude.com/claude-code) and [Codex](https://developers.openai.com/codex/cli) agents at once and jumping between them fast. Each agent is a real interactive `claude` or `codex` session in its own tmux session; provider hooks report status (working / idle / needs attention) and deliver queued messages the moment an agent goes idle. An idle agent whose screen shows a scheduled wake-up or a running background task is displayed as `waiting` (◐) instead — best-effort, detected from the pane content since hooks carry no such signal.
 
 ```
 $ am
@@ -25,7 +25,7 @@ an optional task, then jumps into the new session).
 
 ## Install
 
-Requires [Bun](https://bun.sh), tmux, and Claude Code.
+Requires [Bun](https://bun.sh), tmux, and Claude Code. Codex (≥0.133, for `--codex` agents) is optional.
 
 ```sh
 git clone https://github.com/lalexgap/agent-manager.git
@@ -41,8 +41,9 @@ am new api-refactor -m "refactor the api layer"   # spawn in current dir and jum
 am new bugfix --dir ~/code/other-repo             # spawn elsewhere
 am new quiet-one --no-jump                        # spawn without attaching
 am new perf --worktree perf-tuning                # spawn in a fresh git worktree
+am new gpt-take --codex                           # run Codex instead of Claude Code
 am new triage --resume                            # adopt an existing conversation
-                                                  # (opens Claude's session picker;
+                                                  # (opens the provider's session picker;
                                                   #  --resume <id> / --continue also work)
 
 am                       # split view: sidebar + live agent pane
@@ -57,6 +58,11 @@ am ls                    # status table (--json for scripting)
 am send api "then update the changelog"    # queued; delivered when idle
 am send api --now "prefer the v2 endpoint" # typed in immediately (steers current turn)
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
+
+am transcript api        # render the agent's conversation as markdown
+                         # (--full keeps complete tool output; --out <file>)
+am handoff api           # hand the work to a fresh agent on the OTHER provider,
+                         # briefed with the transcript (--to claude|codex to pick)
 
 am queue api             # show pending messages (--clear to drop them)
 am stop api              # kill the session but keep state (resumable)
@@ -78,7 +84,9 @@ Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps w
 ## How it works
 
 - **tmux**: `am new <name>` starts `claude` inside a detached tmux session named `agentmgr-<name>`. Jumping attaches (or `switch-client`s when you're already inside tmux), so you always get Claude Code's native UI.
-- **Hooks**: agents are launched with `claude --settings ~/.agent-manager/hook-settings.json`, a generated file wiring SessionStart / UserPromptSubmit / Stop / Notification / SessionEnd to `am hook <event>`. Your normal `claude` sessions are untouched. Hooks identify their agent via the `AGENTMGR_AGENT` env var set on the tmux session.
+- **Hooks**: claude agents are launched with `claude --settings ~/.agent-manager/hook-settings.json`, a generated file wiring SessionStart / UserPromptSubmit / Stop / Notification / SessionEnd to `am hook <event>`. Your normal `claude` sessions are untouched. Hooks identify their agent via the `AGENTMGR_AGENT` env var set on the tmux session.
+- **Codex agents**: `am new --codex` runs Codex, whose hook system mirrors Claude Code's. Codex has no per-launch settings flag and its hook trust is keyed to the config file a hook lives in, so `am` installs its hook block persistently into `~/.codex/config.toml` (guarded by `AGENTMGR_AGENT`, inert in your own codex sessions). The first managed launch shows Codex's hooks review — choose **Trust all and continue** (one-time; the trust hash survives until am's paths change). Codex fires SessionStart at the first turn rather than TUI launch, so a fresh codex agent reads `starting` until its first prompt; approvals surface via the dedicated PermissionRequest event.
+- **Handoff**: `am handoff <name>` renders the agent's native session file (Claude: `~/.claude/projects/...`, Codex: `~/.codex/sessions/...` — captured from hook payloads) into markdown under `~/.agent-manager/handoffs/`, then spawns a fresh agent on the other provider briefed with it. Neither CLI can adopt the other's session natively, so the handoff is a context briefing: the new agent is told to re-verify repo state rather than trust stale tool output. The source agent keeps running until you stop it.
 - **Queue**: `am send` appends to `~/.agent-manager/queue/<name>.jsonl`. When the agent finishes a turn, its Stop hook pops the next message and types it into the session via `tmux send-keys`.
 - **Daemon**: a small background process (auto-started by `am new`) serving HTTP over a unix socket at `~/.agent-manager/daemon.sock`. It schedules queue delivery, sweeps dead sessions, and feeds `am watch`. It's an accelerator, not a requirement — if it's down, hooks fall back to handling delivery themselves, so nothing breaks.
 - **Notifications**: macOS notifications fire when an agent needs your attention (permission prompts), and when one goes idle after real background work — filtered so you're not pinged for agents you're currently watching, quick replies (default threshold 30s of work, tune `idleNotifyMinSeconds` in `~/.agent-manager/config.json`), or agents about to receive a queued message. Notifications come from the hooks, so they work even with no `am` process or daemon running.

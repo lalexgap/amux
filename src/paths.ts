@@ -41,6 +41,10 @@ export function snapshotsDir(): string {
   return join(baseDir(), "snapshots");
 }
 
+export function handoffsDir(): string {
+  return join(baseDir(), "handoffs");
+}
+
 export function daemonSocket(): string {
   return join(baseDir(), "daemon.sock");
 }
@@ -50,7 +54,7 @@ export function daemonPidFile(): string {
 }
 
 export function ensureDirs(): void {
-  for (const dir of [agentsDir(), queueDir(), worktreesDir(), snapshotsDir()]) {
+  for (const dir of [agentsDir(), queueDir(), worktreesDir(), snapshotsDir(), handoffsDir()]) {
     mkdirSync(dir, { recursive: true });
   }
 }

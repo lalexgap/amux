@@ -1,7 +1,11 @@
-import { readAgent } from "./state";
+import { agentProvider, readAgent, type AgentState } from "./state";
 import { queuePeek, queuePop } from "./queue";
 import { hasSession, sendText } from "./tmux";
 import { cliEntrypoint } from "./settings";
+
+export function enterDelayMs(agent: AgentState): number | undefined {
+  return agentProvider(agent) === "codex" ? 150 : undefined;
+}
 
 // Type the queue head into the agent's session. Peek → send → pop, so a
 // failed send leaves the message queued for the next attempt instead of
@@ -11,7 +15,7 @@ export function deliverNext(name: string): boolean {
   if (!agent || !hasSession(agent.tmuxSession)) return false;
   const message = queuePeek(name);
   if (message === null) return false;
-  sendText(agent.tmuxSession, message);
+  sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent) });
   queuePop(name);
   return true;
 }

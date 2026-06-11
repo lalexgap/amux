@@ -21,7 +21,7 @@ describe("clipLine", () => {
 });
 
 describe("conversationArgs", () => {
-  const base = { name: "x" };
+  const base = {};
 
   test("defaults to a fresh conversation", () => {
     expect(conversationArgs(base)).toEqual([]);

@@ -1,7 +1,7 @@
 import { resolveAgent } from "../state";
 import { queueAppend, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
-import { deliverNext } from "../deliver";
+import { deliverNext, enterDelayMs } from "../deliver";
 
 function requireLiveSession(prefix: string) {
   const agent = resolveAgent(prefix);
@@ -15,8 +15,8 @@ export function sendCommand(prefix: string, message: string, opts: { now: boolea
   const agent = requireLiveSession(prefix);
 
   if (opts.now) {
-    // Inject immediately; Claude Code's native mid-turn steering handles the rest.
-    sendText(agent.tmuxSession, message);
+    // Inject immediately; the TUI's native mid-turn steering handles the rest.
+    sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent) });
     console.log(`sent to "${agent.name}" (steering current turn)`);
     return;
   }
@@ -35,6 +35,6 @@ export async function interruptCommand(prefix: string, message: string): Promise
   const agent = requireLiveSession(prefix);
   sendEscape(agent.tmuxSession);
   await Bun.sleep(400);
-  sendText(agent.tmuxSession, message);
+  sendText(agent.tmuxSession, message, { enterDelayMs: enterDelayMs(agent) });
   console.log(`interrupted "${agent.name}" with new message`);
 }

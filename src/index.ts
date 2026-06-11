@@ -10,6 +10,8 @@ import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand } from "./commands/resume";
+import { transcriptCommand } from "./commands/transcript";
+import { handoffCommand } from "./commands/handoff";
 import { capturePane, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
@@ -19,7 +21,7 @@ import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
 
-const HELP = `am — manage and jump between Claude Code agents
+const HELP = `am — manage and jump between coding agents (Claude Code & Codex)
 
 usage:
   am                          split view: sidebar + live agent pane
@@ -29,18 +31,24 @@ usage:
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
-  am new <name> [-m msg] [--dir path | --worktree branch] [--remote | --no-remote]
+  am new <name> [-m msg] [--dir path | --worktree branch] [--codex] [--remote | --no-remote]
                               spawn a new agent in tmux and jump into it
-                              (--no-jump to stay; non-TTY callers never jump)
+                              (--no-jump to stay; non-TTY callers never jump;
+                               --codex runs Codex instead of Claude Code)
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
-                              (bare --resume opens Claude's session picker)
+                              (bare --resume opens the provider's session picker)
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
   am interrupt <name> <msg>   abort current turn (Esc), then send message
   am queue <name> [--clear]   show or clear an agent's pending queue
+  am transcript <name> [--full] [--out file]
+                              render the agent's conversation as markdown
+  am handoff <name> [new-name] [--to claude|codex]
+                              hand the agent's work to a new agent on the other
+                              provider, briefed with the rendered transcript
   am stop <name>              kill the session but keep state (resumable)
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
   am watch                    live status table (via the daemon)
@@ -53,7 +61,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -180,6 +188,7 @@ async function main(): Promise<void> {
         message: (args.flags.m ?? args.flags.message) as string | undefined,
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
+        provider: args.flags.codex ? "codex" : undefined,
         resume: args.flags.resume as string | boolean | undefined,
         continue: !!args.flags.continue,
         jump: args.flags["no-jump"] ? false : undefined,
@@ -215,6 +224,20 @@ async function main(): Promise<void> {
     case "queue":
     case "q":
       queueCommand(requirePositional(args, 0, "agent name"), { clear: !!args.flags.clear });
+      break;
+    case "transcript":
+      transcriptCommand(requirePositional(args, 0, "agent name"), {
+        full: !!args.flags.full,
+        out: args.flags.out as string | undefined,
+      });
+      break;
+    case "handoff":
+      await handoffCommand(requirePositional(args, 0, "agent name"), {
+        newName: args.positional[1],
+        to: args.flags.to as string | undefined,
+        full: !!args.flags.full,
+        jump: args.flags["no-jump"] ? false : undefined,
+      });
       break;
     case "stop": {
       const agent = resolveAgent(requirePositional(args, 0, "agent name"));

@@ -70,9 +70,12 @@ function paneTarget(session: string): string {
   return `=${session}:`;
 }
 
-export function sendText(session: string, text: string): void {
+export function sendText(session: string, text: string, opts: { enterDelayMs?: number } = {}): void {
   const sent = tmux("send-keys", "-t", paneTarget(session), "-l", "--", text);
   if (sent.exitCode !== 0) throw new Error(`tmux send-keys failed: ${sent.stderr.trim()}`);
+  // The codex TUI drops an Enter that lands in the same key batch as the
+  // text (bracketed-paste detection); a short beat makes it a keypress.
+  if (opts.enterDelayMs) Bun.sleepSync(opts.enterDelayMs);
   tmux("send-keys", "-t", paneTarget(session), "Enter");
 }
 
