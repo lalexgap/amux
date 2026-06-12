@@ -61,19 +61,51 @@ export function sshAm(
   };
 }
 
-// Same, asynchronously — for the picker's background fleet refresh.
-export async function sshAmAsync(host: string, args: string[]): Promise<SshResult> {
-  const proc = Bun.spawn(sshArgv(host, amCommandString(args), false), {
-    stdin: "ignore",
+// Async process runner shared by the non-blocking ssh helpers: the move
+// pipeline runs inside the sidebar's event loop, where a spawnSync would
+// freeze rendering and input for the duration.
+export async function runAsync(
+  cmd: string[],
+  opts: { stdin?: string; timeoutMs?: number } = {},
+): Promise<SshResult> {
+  const proc = Bun.spawn(cmd, {
+    stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
+  let timedOut = false;
+  const timer = opts.timeoutMs
+    ? setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+      }, opts.timeoutMs)
+    : undefined;
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  return { exitCode, stdout, stderr };
+  clearTimeout(timer);
+  return { exitCode: timedOut ? 124 : exitCode, stdout, stderr };
+}
+
+// Same as sshAm, asynchronously — for the picker's background fleet refresh
+// and the move pipeline.
+export async function sshAmAsync(
+  host: string,
+  args: string[],
+  opts: { stdin?: string; timeoutMs?: number } = {},
+): Promise<SshResult> {
+  return runAsync(sshArgv(host, amCommandString(args), false), opts);
+}
+
+// Async raw remote command (realpath, test -d, mkdir).
+export async function sshRunAsync(
+  host: string,
+  command: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<SshResult> {
+  return runAsync(["ssh", host, "--", command], opts);
 }
 
 // Run `am <args>` remotely with the terminal attached (interactive jump from

@@ -145,3 +145,12 @@ describe("migrationBrief", () => {
     expect(brief).toContain("original keeps running");
   });
 });
+
+describe("premoveNotice", () => {
+  test("names the destination and asks for wrap-up", async () => {
+    const { premoveNotice } = await import("../src/commands/move");
+    const notice = premoveNotice("home.alexgap.ca");
+    expect(notice).toContain("about to be MOVED to home.alexgap.ca");
+    expect(notice).toContain("Do not start new work");
+  });
+});
