@@ -22,6 +22,7 @@ import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
 import { daemonCommand } from "./commands/daemon";
+import { serveCommand, tokenCommand } from "./commands/serve";
 import { sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
 import { deliverCommand } from "./deliver";
@@ -60,6 +61,10 @@ usage:
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)
+  am serve [--port n] [--bind addr]
+                              HTTP API + installable PWA for phones (token-gated;
+                              put it behind a tailnet/Caddy — it can spawn agents)
+  am token [--reset]          print (or regenerate) the API bearer token
 
 remote (agents running on a server, am on your laptop):
   am -H <host> <command...>   run any am command on <host> over ssh
@@ -81,7 +86,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -350,6 +355,15 @@ async function main(): Promise<void> {
       break;
     case "daemon":
       await daemonCommand(args.positional[0]);
+      break;
+    case "serve":
+      serveCommand({
+        port: args.flags.port ? Number(args.flags.port) : undefined,
+        bind: args.flags.bind as string | undefined,
+      });
+      return; // keep the process alive serving HTTP
+    case "token":
+      tokenCommand({ reset: !!args.flags.reset });
       break;
     case "watch":
       await watchCommand();

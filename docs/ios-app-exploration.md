@@ -1,8 +1,11 @@
 # An iOS app for `am` — research & design exploration
 
-**Status:** research / design only. Nothing here is built. The goal is to decide
-*whether* an iOS app is worth building, *what* it should do, and *how* it would
-reach the fleet — then propose an MVP scope.
+**Status:** Phases 1–2 of the MVP are **implemented** on the `ios-pwa` branch —
+`am serve` ships a token-gated HTTP API plus an installable PWA (fleet list,
+agent detail + pane snapshot, queue/now/interrupt, spawn/stop/remove). The rest
+of this doc is the design rationale that led there; remote-agent *actions* over
+the API, push integration, and the optional native app (Phase 3) are still
+future work.
 
 **Audience:** whoever picks this up next (likely a coding agent). Verify the
 code references against the current tree; line numbers drift.
@@ -242,13 +245,58 @@ push. Until that exists, run ntfy notifications + the Claude app (D). Keep SSH
 (C) in mind for power operations the HTTP layer doesn't cover yet.
 
 ```
-  iPhone (native app, on tailnet)
-        │  HTTPS + bearer token  (tailscale serve / MagicDNS)
+  iPhone PWA (on tailnet, installed to Home Screen)
+        │  HTTPS + bearer token  (Caddy on tailnet / tailscale serve)
         ▼
-  am daemon HTTP layer  ──► agentRows()/fleetRows()  ──► local state files + tmux
-        │                                              └─► ssh fan-out ──► remote `am`
-        └─► push: needs-attention / idle  ──► APNs (or ntfy) ──► lock screen
+  am serve  (HTTP API + static PWA)  ──► cachedFleetRows()  ──► local state + tmux
+        │                                                    └─► ssh fan-out ──► remote `am`
+        └─► push: needs-attention / idle  ──► ntfy (or APNs) ──► lock screen
 ```
+
+### 4e. Exposure: Caddy vs Tailscale — public vs private
+The am API is an **RCE control plane** (spawn = run a process; send-message =
+make an agent run shell commands; move/handoff/stop mutate the fleet). So the
+exposure decision is about *blast radius*, not just convenience:
+
+- **Public Caddy + only a bearer/basic token: don't.** A bug in the token check
+  or a forgotten un-gated route is internet-facing RCE across every machine.
+  One gate is not enough for this capability.
+- **Caddy bound to the tailnet interface (recommended).** Caddy stays the
+  server (HTTPS, stable hostname, reverse proxy) and Tailscale is the network
+  gate — nothing routes from the public internet, the token is defense-in-depth.
+  This is exactly what `docs/remote-server-plan.md` already prescribes:
+  *"bind a Caddy site to the tailscale interface."*
+- **Public Caddy + mTLS client cert** is the only acceptable *public* form:
+  Caddy rejects anyone without your phone's client cert at the TLS handshake.
+  Its one advantage is reachability without the VPN; cost is fiddly `.p12`
+  profile management on iOS. Use only if "check agents on cellular without
+  toggling Tailscale" is a hard requirement.
+
+**Where Tailscale is strongly recommended:** the mutation/code-execution routes
+(`POST /agents`, `/messages`, `move`, `handoff`, `stop`). Read-only status is
+lower stakes, but since one service hosts both, put the whole thing behind the
+tailnet.
+
+### 4f. PWA authentication (the concrete model `am serve` implements)
+A PWA is a browser, not a native app — no Keychain, no embedded secret. Auth is
+two cooperating layers:
+
+1. **Network layer (deployment):** Tailscale *is* the first gate (above). It
+   also gives free valid HTTPS via `tailscale serve` / Caddy — required for a
+   PWA at all (service workers + "Add to Home Screen" refuse plain HTTP).
+2. **App layer (in code):** a **bearer token**. The static app shell carries no
+   secret, so it's served unauthenticated; every `/api/*` call must send
+   `Authorization: Bearer <token>`. The token is generated once
+   (`am token`, stored at `~/.agent-manager/api-token`, also overridable via
+   `AM_API_TOKEN`), pasted/scanned into the PWA once, and kept in the browser's
+   `localStorage`.
+
+A token in a **custom header** (not a cookie) makes **CSRF a non-issue** —
+browsers don't auto-attach custom headers cross-origin and CORS preflight
+guards the endpoint — so no CSRF-token machinery is needed. The one wrinkle:
+iOS may evict a PWA's `localStorage` after ~7 days unused, so re-entering the
+token must stay a 5-second paste/scan. (Avoiding that is a reason to go native
+later, not a blocker now.)
 
 ---
 

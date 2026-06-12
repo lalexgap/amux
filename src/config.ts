@@ -24,12 +24,20 @@ export interface Config {
   // ssh host aliases whose agents appear alongside local ones in ls, the
   // picker, and the hub (each must have am installed and on PATH).
   remotes?: string[];
+  // `am serve` (the HTTP API + PWA for phones) listens here. Bind defaults to
+  // loopback — point it at a tailnet IP, or keep loopback and front it with
+  // Caddy/tailscale serve. NEVER 0.0.0.0 without a network gate: the API can
+  // spawn agents and run commands.
+  apiPort: number;
+  apiBind: string;
 }
 
 const DEFAULTS: Config = {
   notifyOnIdle: true,
   idleNotifyMinSeconds: 30,
   remoteControl: true,
+  apiPort: 8787,
+  apiBind: "127.0.0.1",
 };
 
 export function loadConfig(): Config {

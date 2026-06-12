@@ -53,6 +53,12 @@ export function daemonPidFile(): string {
   return join(baseDir(), "daemon.pid");
 }
 
+// Bearer token for `am serve`'s HTTP API. Kept out of config.json so the secret
+// lives in its own 0600 file; AM_API_TOKEN overrides it for ephemeral setups.
+export function apiTokenFile(): string {
+  return join(baseDir(), "api-token");
+}
+
 export function ensureDirs(): void {
   for (const dir of [agentsDir(), queueDir(), worktreesDir(), snapshotsDir(), handoffsDir()]) {
     mkdirSync(dir, { recursive: true });

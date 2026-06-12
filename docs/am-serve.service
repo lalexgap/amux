@@ -1,0 +1,29 @@
+# systemd user unit for `am serve` — the HTTP API + installable PWA that lets
+# you watch and message the fleet from a phone. Optional; run it on the box the
+# agents live on.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp docs/am-serve.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now am-serve
+#   loginctl enable-linger $USER   # user units run without an active login
+#
+# SECURITY: the API can spawn agents and run commands, so it MUST sit behind a
+# network gate. By default it binds 127.0.0.1 — either set config.apiBind to a
+# tailnet IP, or keep loopback and front it with Caddy/tailscale serve. Never
+# expose it to the public internet with only the bearer token. See
+# docs/ios-app-exploration.md §4e–4f.
+#
+# Get the token to paste into the PWA with:  am token
+# sh -l so PATH picks up ~/.bun/bin from the profile.
+
+[Unit]
+Description=am agent-manager phone API + PWA
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -lc 'am serve'
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
