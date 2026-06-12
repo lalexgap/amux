@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { agentRows, relativeTime, shortenHome, STATUS_ICONS, type AgentRow } from "./commands/ls";
 import { loadConfig } from "./config";
 import { sshAm, sshAmAsync, sshRun } from "./remote";
@@ -163,7 +164,11 @@ export function toggleGroupMode(): GroupMode {
 }
 
 export function sectionFor(row: FleetRow, mode: GroupMode): string {
-  if (mode === "dir") return shortenHome(row.repoRoot ?? row.dir);
+  // Project = basename, not path: the same repo legitimately lives at
+  // different paths per machine (~ vs /home/u vs a /mnt symlink target), and
+  // any path-string normalization would still split those into separate
+  // sections.
+  if (mode === "dir") return basename(row.repoRoot ?? row.dir);
   return row.host ?? "local";
 }
 

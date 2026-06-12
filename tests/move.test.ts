@@ -165,6 +165,9 @@ describe("sectionFor", () => {
     expect(sectionFor(row({}) as never, "host")).toBe("local");
     expect(sectionFor(row({ host: "home.alexgap.ca" }) as never, "host")).toBe("home.alexgap.ca");
     const wt = row({ dir: "/home/u/.agent-manager/worktrees/app/x", repoRoot: "/home/u/code/app" });
-    expect(sectionFor(wt as never, "dir")).toBe(sectionFor(row({}) as never, "dir"));
+    expect(sectionFor(wt as never, "dir")).toBe("app");
+    // same project, different machine/home/symlink spellings → one section
+    expect(sectionFor(row({ dir: "/Users/u/code/app" }) as never, "dir")).toBe("app");
+    expect(sectionFor(row({ dir: "/mnt/fastdata/code/app" }) as never, "dir")).toBe("app");
   });
 });
