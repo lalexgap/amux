@@ -130,10 +130,14 @@ The help line already wraps via `wrapTokens`, which is good. Smaller polish:
 
 ## Suggested order
 
-1. **P0 (a)+(b)+(c)** — error color/glyph, banner placement, truncation ceiling.
-2. **P1** — colored status glyph + trimmed badge + queue badge.
+1. ✅ **P0 (a)+(b)+(c)** — error color/glyph, banner under header, truncation
+   ceiling. *(shipped — banner renders red ✕ / yellow ⚠ / green ✓ / dim, errors
+   get 10 lines, ssh control bytes stripped.)*
+2. ✅ **P1** — colored status glyph + trimmed badge + ▸N queue badge. *(shipped.)*
 3. **P2** — create-flow step indicator + live validation + provider toggle.
 4. **P3 / P4** — sort-within-section, scroll hints, collapsible help.
+
+P0 + P1 are on `am/am-ui` (pushed); P2–P4 await a go-ahead.
 
 Each lands as its own commit on `am/am-ui` with tsc + tests green. P0 and P1 add
 unit tests (feedback level → SGR, status → color); the rest extend picker.test.ts.
