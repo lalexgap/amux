@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { agentProvider, listAgents, readAgent, resolveAgent } from "./state";
 import { queueDepth } from "./queue";
-import { pick } from "./picker";
+import { pick, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand } from "./commands/send";
@@ -171,12 +171,13 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
 
 async function pickerFlow(): Promise<void> {
   const load = fleetPickerItems;
-  const handlers = {
+  const handlers: PickerHandlers = {
     stop: (key: string) => {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["stop", name]);
-        return result.exitCode === 0 ? `stopped ${name} on ${host}` : `stop failed: ${result.stderr.trim()}`;
+        if (result.exitCode !== 0) return { text: `stop failed: ${result.stderr.trim()}`, level: "error" };
+        return `stopped ${name} on ${host}`;
       }
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
@@ -186,7 +187,8 @@ async function pickerFlow(): Promise<void> {
       const { host, name } = splitFleetKey(key);
       if (host) {
         const result = sshAm(host, ["rm", name]);
-        return result.exitCode === 0 ? `removed ${name} on ${host}` : `rm failed: ${result.stderr.trim()}`;
+        if (result.exitCode !== 0) return { text: `rm failed: ${result.stderr.trim()}`, level: "error" };
+        return `removed ${name} on ${host}`;
       }
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
