@@ -14,7 +14,7 @@ import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { exportCommand, importCommand, moveCommand } from "./commands/move";
-import { handoffHandler, moveHandler } from "./commands/fleetActions";
+import { cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost } from "./fleet";
 import { loadConfig } from "./config";
@@ -218,6 +218,7 @@ async function pickerFlow(): Promise<void> {
       return shortenHome(agent?.dir ?? process.cwd());
     },
     move: moveHandler,
+    clone: cloneHandler,
     handoff: handoffHandler,
   };
 

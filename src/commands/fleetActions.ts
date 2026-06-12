@@ -14,6 +14,12 @@ export function moveHandler(key: string): string | Promise<string> {
   return moveAgent(target.first, target.second, { copy: false, start: true });
 }
 
+export function cloneHandler(key: string): string | Promise<string> {
+  const target = defaultMoveTarget(key, loadConfig().remotes ?? []);
+  if ("error" in target) return target.error;
+  return moveAgent(target.first, target.second, { copy: false, start: true, clone: true });
+}
+
 export function handoffHandler(key: string): string | Promise<string> {
   const { host, name } = splitFleetKey(key);
   if (host) {
