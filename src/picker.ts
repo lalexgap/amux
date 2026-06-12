@@ -70,6 +70,8 @@ export interface PickerHandlers {
   move?: (name: string) => Feedback | Promise<Feedback>;
   handoff?: (name: string) => Feedback | Promise<Feedback>;
   clone?: (name: string) => Feedback | Promise<Feedback>;
+  // Toggle the list grouping (host ↔ directory); returns banner feedback.
+  regroup?: () => Feedback;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -180,7 +182,7 @@ const FB_COLOR: Record<FeedbackLevel, string> = { info: DIM, ok: GREEN, warn: YE
 // Errors carry detail (ssh stderr) worth more room than a routine toast.
 const ERROR_FEEDBACK_LINES = 10;
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · q/esc quit";
+const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -616,6 +618,9 @@ export async function pick(
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;
+      } else if (key === "g" && handlers.regroup) {
+        feedback = asFeedback(handlers.regroup());
+        items = load();
       } else if (key === "m" && handlers.move) {
         runDeferred("moving", handlers.move);
       } else if (key === "h" && handlers.handoff) {
