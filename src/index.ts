@@ -6,6 +6,7 @@ import { newCommand } from "./commands/new";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand } from "./commands/send";
 import { reportCommand } from "./commands/report";
+import { sendFileCommand } from "./commands/sendfile";
 import { commsCommand } from "./commands/comms";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
@@ -57,6 +58,9 @@ usage:
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
+  am send <name> [msg] --file <path>
+                              hand a file to the agent (works across machines):
+                              lands in its inbox, with a note pointing at it
   am interrupt <name> <msg>   abort current turn (Esc), then send message
                               (sends from inside an agent are auto-attributed:
                                the recipient sees "[am · from <you>] …")
@@ -102,7 +106,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -167,6 +171,10 @@ function injectSender(command: string | undefined, argv: string[]): string[] {
 
 function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv: string[]): void {
   if (!command || !AGENT_COMMANDS.has(command)) return;
+  // A file send routes itself: the file is local, so it scp's the bytes and
+  // forwards only the note — not the whole command (the path wouldn't exist on
+  // the far side).
+  if (command === "send" && args.flags.file) return;
   const ref = args.positional[0];
   if (!ref) return;
 
@@ -344,10 +352,18 @@ async function main(): Promise<void> {
       jumpPreviousCommand();
       break;
     case "send":
-      await sendCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
-        now: !!args.flags.now,
-        from: args.flags.from as string | undefined,
-      });
+      if (args.flags.file) {
+        await sendFileCommand(requirePositional(args, 0, "agent name"), args.flags.file as string, {
+          message: args.positional.slice(1).join(" ") || undefined,
+          now: !!args.flags.now,
+          from: args.flags.from as string | undefined,
+        });
+      } else {
+        await sendCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
+          now: !!args.flags.now,
+          from: args.flags.from as string | undefined,
+        });
+      }
       break;
     case "interrupt":
     case "int":

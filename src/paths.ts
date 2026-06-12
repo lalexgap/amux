@@ -47,6 +47,12 @@ export function commsLogFile(): string {
   return join(baseDir(), "comms.jsonl");
 }
 
+// Where files handed to an agent land (am send --file). A dedicated drop so a
+// handoff never clobbers the agent's repo/worktree; the note carries the path.
+export function inboxDir(name: string): string {
+  return join(baseDir(), "inbox", name);
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }

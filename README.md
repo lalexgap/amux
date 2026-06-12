@@ -57,6 +57,7 @@ am ls                    # status table (--json for scripting)
 
 am send api "then update the changelog"    # queued; delivered when idle
 am send api --now "prefer the v2 endpoint" # typed in immediately (steers current turn)
+am send api --file ./patch.diff            # hand off a file (cross-machine too)
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 
 am report api --to lead   # api now reports progress to lead (see below)
@@ -104,6 +105,19 @@ the structure that makes a conversation work:
   backstop, when it finishes a real work stint without reporting, `am` sends
   `lead` a terse "went idle after 4m · task: …" so the lead always hears
   something.
+
+- **Handing off files.** `am send <name> --file <path>` ships a file to another
+  agent — across machines too. It lands in the recipient's inbox
+  (`~/.agent-manager/inbox/<name>/`, so it never touches their repo) and the
+  agent gets an attributed note pointing at the path:
+
+  ```sh
+  am send web --file ./report.pdf                  # → web's inbox + a note
+  am send box:web "ship this build" --file app.zip # to web on host `box`
+  ```
+
+  Remote handoffs scp the bytes over and forward only the note, reusing the same
+  transport as `am move`.
 
 - **Loop-safe.** A per-pair rate limiter (default 5 messages / 60s, tunable via
   `commsMaxPerWindow` / `commsWindowSeconds` in config) drops runaway A→B→A
