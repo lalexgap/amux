@@ -181,6 +181,7 @@ export function fleetPickerItems(): PickerItem[] {
     items.push({
       name: `${host}:`,
       section: host,
+      secondary: false,
       label: `✕ (${shortHost(host)} unreachable)`,
       right: "",
       search: host,
