@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import {
@@ -144,6 +144,11 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   if (sshRun(host, `test -d ${shq(targetDir)}`, { timeoutMs: 8000 }).exitCode !== 0) {
     throw new Error(`target dir missing on ${host}: ${targetDir} — create/clone it first, or pass --dir`);
   }
+  // Canonicalize on the TARGET: claude resolves symlinks when keying
+  // transcripts by project dir (~/code/x → /mnt/.../x), so the slug and the
+  // stored dir must use the real path or resume finds no conversation.
+  const canonicalDir =
+    sshRun(host, `realpath ${shq(targetDir)}`, { timeoutMs: 8000 }).stdout.trim() || targetDir;
 
   if (!opts.clone) stopAgent(agent); // a move never leaves two live copies
 
@@ -153,7 +158,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   let remoteTranscriptPath: string | undefined;
   if (transcript && sessionId) {
     const target = targetTranscriptPath(
-      agentProvider(agent), targetHomeDir, targetDir, sessionId, transcript.codexRelative,
+      agentProvider(agent), targetHomeDir, canonicalDir, sessionId, transcript.codexRelative,
     );
     if (sshRun(host, `mkdir -p ${shq(dirname(target))}`, { timeoutMs: 8000 }).exitCode !== 0) {
       throw new Error(`could not create transcript dir on ${host}`);
@@ -166,7 +171,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
   const payload: MovePayload = {
     state: {
       ...agent,
-      dir: targetDir,
+      dir: canonicalDir,
       status: "exited",
       workingSince: undefined,
       transcriptPath: remoteTranscriptPath,
@@ -179,7 +184,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
         from: hostname(),
         to: host,
         oldDir: agent.dir,
-        newDir: targetDir,
+        newDir: canonicalDir,
         clone: !!opts.clone,
       }),
       ...queueList(agent.name).map((m) => m.message),
@@ -226,6 +231,9 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   if (!existsSync(targetDir)) {
     throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
   }
+  // Same symlink hazard as push, local side: claude keys transcripts by the
+  // resolved path.
+  const canonicalDir = realpathSync(targetDir);
 
   // Stop it remotely before copying the conversation so the file is final
   // (clones leave the original running and accept a snapshot).
@@ -235,7 +243,7 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   let localTranscriptPath: string | undefined;
   if (remote.transcript && sessionId) {
     const provider = agentProvider(remote.state);
-    const target = targetTranscriptPath(provider, homedir(), targetDir, sessionId, remote.transcript.codexRelative);
+    const target = targetTranscriptPath(provider, homedir(), canonicalDir, sessionId, remote.transcript.codexRelative);
     Bun.spawnSync(["mkdir", "-p", dirname(target)]);
     const scp = Bun.spawnSync(["scp", "-q", `${host}:${remote.transcript.path}`, target]);
     if (scp.exitCode !== 0) throw new Error(`transcript copy failed: ${scp.stderr.toString().trim()}`);
@@ -244,13 +252,13 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
 
   importPayload(
     JSON.stringify({
-      state: { ...remote.state, dir: targetDir, transcriptPath: localTranscriptPath },
+      state: { ...remote.state, dir: canonicalDir, transcriptPath: localTranscriptPath },
       queue: [
         migrationBrief({
           from: host,
           to: hostname(),
           oldDir: remote.state.dir,
-          newDir: targetDir,
+          newDir: canonicalDir,
           clone: !!opts.clone,
         }),
         ...remote.queue,
