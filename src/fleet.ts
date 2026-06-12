@@ -186,7 +186,7 @@ export function fleetPickerItems(): PickerItem[] {
         .join(" "),
       search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.host ?? "local"}`,
       meta: [
-        `status   ${r.status}${r.queued > 0 ? ` (${r.queued} queued)` : ""}`,
+        `status   ${r.status}${r.statusDetail ? ` — ${r.statusDetail}` : ""}${r.queued > 0 ? ` (${r.queued} queued)` : ""}`,
         `host     ${r.host ?? "local"}`,
         `provider ${r.provider}`,
         `dir      ${shortenHome(r.dir)}`,
