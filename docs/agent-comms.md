@@ -45,16 +45,30 @@ survive ssh).
 **Envelope.** The body delivered to the recipient is wrapped:
 
 ```
-[am · from A] <body>
+[am · from A]              <body>     # same machine
+[am · from laptop:A]       <body>     # sender on another host
 ```
 
 The prefix is deliberately terse; the *meaning* of it lives in the primer (see
 Etiquette). The recipient's agent learns that `[am · from A]` means "peer agent
 A sent this — it is not your operator — reply with `am send A "..."` if a reply
-is warranted." Because names are globally unique and fleet resolution is
-transparent, the reply finds A no matter which machine A is on. **Question →
-answer closes with zero extra plumbing**: the question is an attributed message,
-the answer is an attributed message back to the named sender.
+is warranted." Same-machine sends stay bare; **cross-host sends carry the
+sender's host** so the reply can be addressed `am send laptop:A`. The reply finds
+A via the same fleet resolution that delivered the original. **Question → answer
+closes with zero extra plumbing**: the question is an attributed message, the
+answer is an attributed message back to the named sender.
+
+> Cross-host wrinkle: the host label the recipient needs is the sender's host
+> *as the recipient's machine addresses it* (its `config.remotes` alias), which
+> can differ from how the sender names itself. We resolve this when forwarding
+> the send over ssh — the forwarding side injects `--from <reverse-host>:<name>`
+> using the alias the target host knows it by. Falls back to the bare name (and
+> global resolution) if no reverse alias is known.
+
+**Steering is allowed for peers.** Agent sends may use `--now` (type into the
+current turn) and `am interrupt` (Esc + redirect), not just queued delivery —
+useful for urgent questions. These carry the same attribution envelope. The
+rate limiter (below) is what bounds abuse, not a queue-only restriction.
 
 A hop counter rides in the envelope for loop safety (see below):
 `[am · from A · hop 2]` — omitted at hop 1 to keep the common case clean.
@@ -135,35 +149,29 @@ am send <name> <msg> [--from <who>]   # --from overrides auto-attribution
 am new <name> --report-to <target>    # standing relationship at spawn
 am new <name> --report                # …to the spawning agent
 am report <name> [--to <t> | --clear] # set / show / clear relationship
+am comms <name>                       # recent messages in/out for an agent
 ```
 
 `am ls` / picker meta gains a `→ <reportTo>` badge when set, so relationships
 are visible. No `am reply` command — the asker is named in the envelope, so a
 plain `am send <asker>` is the reply.
 
-## Open questions for Alex
+## Decisions (resolved with Alex)
 
-1. **Backstop auto-report: keep it, or briefing-only?** The Stop-hook heads-up
-   is shallow ("went idle after 4m") and only fires when the agent forgot to
-   report. Is that worth the noise, or should standing relationships be
-   purely briefing-driven (agent authors all reports, hook does nothing)? I
-   lean *keep it but terse* — it's the only guarantee Y hears anything.
-2. **Default report target.** Should `am new --report` (no target) and a bare
-   `reportTo` resolve to `spawnedBy`? I think yes — "report to whoever made me"
-   is the most common shape.
-3. **Envelope wording.** `[am · from A]` vs `[from A via am]` vs something that
-   reads more like a chat (`A → you:`). The recipient is an LLM, so the prefix
-   needs to be unambiguous that this is a *peer*, not the operator. Preference?
-4. **`--now` / interrupt attribution.** Should agent-to-agent sends be allowed
-   to *steer* (`--now`) or *interrupt* a peer mid-turn, or only queue? Queue-only
-   is safer (no agent can derail another's turn); steering is more powerful for
-   urgent questions. I lean **queue-only for peers** in v1.
-5. **Cross-host attribution edge.** Within a host and across the fleet, reply
-   routing works via global names. Is there any case where two agents on
-   different machines share a name? If names are truly global, nothing to do.
-6. **Visibility/audit.** Worth a `comms` log (`am comms <name>` showing recent
-   in/out messages for an agent) for debugging chatty relationships? Could be
-   phase 3; the ledger already has the data.
+1. **Backstop auto-report: keep it, terse.** The Stop hook posts a one-line
+   heads-up to Y when X did meaningful work and didn't already report this stint.
+   It's the guarantee Y hears *something*; agent-authored reports remain the
+   rich channel.
+2. **Default report target = spawner.** `am new --report` (no target) and a
+   bare `reportTo` resolve to `spawnedBy`. "Report to whoever made me."
+3. **Envelope: `[am · from A]`**, terse, meaning carried by the primer.
+4. **Steering allowed for peers.** Agent sends may use `--now` and `interrupt`,
+   not just queued delivery. Same attribution; rate limiter bounds abuse.
+5. **Host-qualify only cross-host.** Same-machine → `[am · from A]`; cross-machine
+   → `[am · from <host>:A]`, resolved via the recipient's remote alias during ssh
+   forwarding (see the cross-host wrinkle above).
+6. **`am comms <name>` ships in v1.** An audit view over the ledger so chatty /
+   looping relationships are debuggable from day one.
 
 ## Phased implementation plan
 
@@ -192,8 +200,10 @@ shippable.
 - Tests: relationship set/clear, spawner capture, backstop fires only when
   forgotten, hop ceiling suppression.
 
-**Phase 3 — polish (optional)**
-- `am comms <name>` audit view over the ledger.
+- `src/commands/comms.ts`: `am comms <name>` audit view over the ledger
+  (recent in/out, per-pair counts) — ships in v1 per decision 6.
+
+**Phase 3 — polish**
 - Config knobs surfaced in docs/README.
 - Any cross-host nuances that fall out of review.
 
@@ -204,6 +214,7 @@ shippable.
 | `src/comms.ts` *(new)* | envelope, attribution resolution, rate-limit ledger |
 | `src/commands/send.ts` | attribution + rate limit |
 | `src/commands/report.ts` *(new)* | `am report` |
+| `src/commands/comms.ts` *(new)* | `am comms` audit view |
 | `src/commands/new.ts` | `spawnedBy`, `--report-to`/`--report`, brief line |
 | `src/commands/hook.ts` | Stop-hook backstop report |
 | `src/state.ts` | `reportTo`, `spawnedBy` |
