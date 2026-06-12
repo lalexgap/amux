@@ -13,8 +13,8 @@ import { resumeCommand, reviveAgent } from "./commands/resume";
 import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
-import { exportCommand, importCommand, moveCommand } from "./commands/move";
-import { cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
+import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode } from "./fleet";
 import { loadConfig } from "./config";
@@ -59,6 +59,9 @@ usage:
   am handoff <name> [new-name] [--to claude|codex]
                               hand the agent's work to a new agent on the other
                               provider, briefed with the rendered transcript
+  am cd <name> <dir>          change the agent's directory: conversation moves
+                              with it (git targets get a fresh worktree;
+                              --in-place uses the dir as-is)
   am stop <name>              kill the session but keep state (resumable)
   am rm <name> [--clean]      kill the agent; --clean also removes its worktree
   am watch                    live status table (via the daemon)
@@ -135,7 +138,7 @@ function messageFrom(args: ParsedArgs): string {
 // local but exactly one remote agent forwards there transparently — so
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
-  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff",
+  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd",
 ]);
 
 function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv: string[]): void {
@@ -223,6 +226,13 @@ async function pickerFlow(): Promise<void> {
     clone: cloneHandler,
     handoff: handoffHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    cd: cdHandler,
+    cdPrefill: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
+      return readAgent(name)?.dir ?? "";
+    },
+
   };
 
   // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),
@@ -332,6 +342,12 @@ async function main(): Promise<void> {
         to: args.flags.to as string | undefined,
         full: !!args.flags.full,
         jump: args.flags["no-jump"] ? false : undefined,
+      });
+      break;
+    case "cd":
+      await cdCommand(requirePositional(args, 0, "agent name"), requirePositional(args, 1, "directory"), {
+        inPlace: !!args.flags["in-place"],
+        start: !args.flags["no-start"],
       });
       break;
     case "move":

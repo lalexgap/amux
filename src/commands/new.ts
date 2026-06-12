@@ -32,7 +32,7 @@ export function isGitRepo(dir: string): boolean {
   return git(dir, "rev-parse", "--git-dir").exitCode === 0;
 }
 
-function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
+export function createWorktree(name: string, branch: string, baseDir: string): { path: string; repoRoot: string } {
   // --git-common-dir resolves through nested worktrees to the main repo, so
   // spawning "from" another agent's worktree still files the new one under
   // the real repo's name.

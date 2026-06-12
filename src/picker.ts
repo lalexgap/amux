@@ -72,6 +72,9 @@ export interface PickerHandlers {
   clone?: (name: string) => Feedback | Promise<Feedback>;
   // Toggle the list grouping (host ↔ directory); returns banner feedback.
   regroup?: () => Feedback;
+  // Relocate an agent to a new directory (r key opens a prefilled prompt).
+  cd?: (name: string, dir: string) => Feedback | Promise<Feedback>;
+  cdPrefill?: (name: string) => string;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
 }
@@ -182,7 +185,7 @@ const FB_COLOR: Record<FeedbackLevel, string> = { info: DIM, ok: GREEN, warn: YE
 // Errors carry detail (ssh stderr) worth more room than a routine toast.
 const ERROR_FEEDBACK_LINES = 10;
 
-const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · q/esc quit";
+const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · r cd · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -253,7 +256,7 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir";
+type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "cd-dir";
 
 export async function pick(
   load: () => PickerItem[],
@@ -276,6 +279,8 @@ export async function pick(
   let newName = "";
   let newTask = "";
   let newDir = "";
+  let cdDir = "";
+  let cdTarget: string | null = null;
   let creating = false;
   let lastHighlighted: string | null = null;
 
@@ -321,6 +326,8 @@ export async function pick(
           ? { text: `task (optional): ${newTask}▌` }
           : mode === "new-dir"
             ? { text: `dir: ${newDir}▌` }
+            : mode === "cd-dir"
+              ? { text: `cd to: ${cdDir}▌` }
             : mode === "filter"
             ? { text: `filter: ${filter}▌` }
             : filter
@@ -562,6 +569,8 @@ export async function pick(
           newName = "";
           newTask = "";
           newDir = "";
+          cdDir = "";
+          cdTarget = null;
           feedback = null;
         } else if (key === "\r" || key === "\n") {
           if (mode === "new-name") {
@@ -574,16 +583,40 @@ export async function pick(
           } else if (mode === "new-task") {
             mode = "new-dir";
             newDir = handlers.defaultDir?.(cursorName) ?? "";
+          } else if (mode === "cd-dir") {
+            const target = cdTarget;
+            const dir = cdDir.trim();
+            mode = "list";
+            cdDir = "";
+            cdTarget = null;
+            if (target && handlers.cd) {
+              feedback = { text: `moving ${target} to ${dir}…`, level: "info" };
+              Promise.resolve()
+                .then(() => handlers.cd!(target, dir))
+                .then(
+                  (message) => {
+                    feedback = asFeedback(message);
+                    items = load();
+                    if (!finished) render();
+                  },
+                  (error: Error) => {
+                    feedback = { text: error.message, level: "error" };
+                    if (!finished) render();
+                  },
+                );
+            }
           } else {
             return submitCreate(); // renders itself
           }
         } else if (key === "\x7f" || key === "\b") {
           if (mode === "new-name") newName = newName.slice(0, -1);
           else if (mode === "new-task") newTask = newTask.slice(0, -1);
+          else if (mode === "cd-dir") cdDir = cdDir.slice(0, -1);
           else newDir = newDir.slice(0, -1);
         } else if (key >= " " && !key.startsWith("\x1b")) {
           if (mode === "new-name") newName += key;
           else if (mode === "new-task") newTask += key;
+          else if (mode === "cd-dir") cdDir += key;
           else newDir += key;
         }
         return render();
@@ -621,6 +654,14 @@ export async function pick(
       } else if (key === "g" && handlers.regroup) {
         feedback = asFeedback(handlers.regroup());
         items = load();
+      } else if (key === "r" && handlers.cd) {
+        const target = filtered()[cursor];
+        if (target) {
+          mode = "cd-dir";
+          cdTarget = target.name;
+          cdDir = handlers.cdPrefill?.(target.name) ?? "";
+          feedback = null;
+        }
       } else if (key === "m" && handlers.move) {
         runDeferred("moving", handlers.move);
       } else if (key === "h" && handlers.handoff) {

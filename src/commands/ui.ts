@@ -4,7 +4,7 @@ import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
 import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
 import { sshAm, sshRun } from "../remote";
-import { cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
+import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
 import { pick, type Feedback, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
@@ -20,7 +20,7 @@ import { readLastAttached } from "../state";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 38;
 
-const HUB_HELP = "f filter · ↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · q/esc detach · ctrl-c quit";
+const HUB_HELP = "f filter · ↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · n new · m move · c clone · h handoff · x stop · d remove · a all · g group · r cd · q/esc detach · ctrl-c quit";
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
@@ -237,6 +237,13 @@ export async function sidebarCommand(): Promise<void> {
     clone: cloneHandler,
     handoff: handoffHandler,
     regroup: () => `grouped by ${toggleGroupMode() === "dir" ? "directory" : "host"}`,
+    cd: cdHandler,
+    cdPrefill: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
+      return readAgent(name)?.dir ?? "";
+    },
+
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
     },
