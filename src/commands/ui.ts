@@ -2,6 +2,8 @@ import { agentProvider, listAgents, readAgent, recordAttached } from "../state";
 import { attachOrSwitch, hasSession, shQuote, tmux } from "../tmux";
 import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
+import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey } from "../fleet";
+import { sshAm, sshRun } from "../remote";
 import { pick, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
 import { queueDepth } from "../queue";
@@ -102,13 +104,51 @@ export async function sidebarCommand(): Promise<void> {
   let shown: string | null = null;
   let highlightTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // Point the right pane at an agent. With focus=false (scroll preview) the
-  // sidebar keeps focus; enter/→ pass focus=true to move into the session.
-  const showAgent = (name: string, focus: boolean): string | null => {
-    const agent = readAgent(name);
-    if (!agent) return focus ? `unknown agent "${name}"` : null;
+  // Point the right pane at an agent (key = name, or host:name for remote).
+  // With focus=false (scroll preview) the sidebar keeps focus; enter/→ pass
+  // focus=true to move into the session.
+  const showAgent = (key: string, focus: boolean): string | null => {
+    const { host, name } = splitFleetKey(key);
     const pane = ensureRightPane();
     if (!pane) return "could not create the agent pane";
+
+    if (host) {
+      if (!name) {
+        tmux("respawn-pane", "-k", "-t", pane, messageCommand(`${host} unreachable`));
+        return null;
+      }
+      // Remote agent: the pane runs ssh -t into a nested remote attach. Dead
+      // remote agents are revived first (on focus only).
+      const row = cachedRemoteRow(host, name);
+      const dead = row && (row.status === "exited" || row.status === "dead");
+      if (dead) {
+        shown = null;
+        if (!focus) {
+          tmux("respawn-pane", "-k", "-t", pane,
+            messageCommand(`${name}@${shortHost(host)}: no live session (${row.status})`));
+          return null;
+        }
+        tmux("respawn-pane", "-k", "-t", pane, messageCommand(`reviving ${name} on ${host}…`));
+        const revived = sshAm(host, ["resume", name]);
+        if (revived.exitCode !== 0) {
+          tmux("respawn-pane", "-k", "-t", pane,
+            messageCommand(`remote revive failed: ${revived.stderr.trim()}`));
+          return `remote revive failed`;
+        }
+      }
+      if (shown !== key) {
+        sshRun(host, `tmux set-option -t '=agentmgr-${name}:' status off`, { timeoutMs: 4000 });
+        const attach = `env -u TMUX ssh -t ${shQuote(host)} -- ${shQuote(`tmux attach-session -t '=agentmgr-${name}'`)}`;
+        const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
+        if (respawned.exitCode !== 0) return `remote attach failed: ${respawned.stderr.trim()}`;
+        shown = key;
+      }
+      if (focus) tmux("select-pane", "-t", pane);
+      return null;
+    }
+
+    const agent = readAgent(name);
+    if (!agent) return focus ? `unknown agent "${name}"` : null;
 
     if (!hasSession(agent.tmuxSession)) {
       shown = null;
@@ -132,14 +172,14 @@ export async function sidebarCommand(): Promise<void> {
       return `reviving ${name}…`;
     }
 
-    if (shown !== name) {
+    if (shown !== key) {
       // The nested attach needs TMUX unset, or the inner tmux refuses to
       // start. The inner session's status bar is noise inside the pane.
       tmux("set-option", "-t", `=${agent.tmuxSession}:`, "status", "off");
       const attach = `env -u TMUX tmux attach-session -t ${shQuote(`=${agent.tmuxSession}`)}`;
       const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
       if (respawned.exitCode !== 0) return `attach failed: ${respawned.stderr.trim()}`;
-      shown = name;
+      shown = key;
     }
     if (focus) {
       tmux("select-pane", "-t", pane);
@@ -148,49 +188,33 @@ export async function sidebarCommand(): Promise<void> {
     return null;
   };
 
-  const load = () => {
-    const agents = listAgents();
-    return agents.map((a) => {
-      const status = displayStatus(a);
-      const queued = queueDepth(a.name);
-      const provider = agentProvider(a);
-      return {
-        name: a.name,
-        label: `${STATUS_ICONS[status]} ${a.name}`,
-        // Claude is the default; only codex agents get tagged in the list.
-        right: [provider === "codex" ? "codex" : "", status, queued > 0 ? `${queued}q` : ""]
-          .filter(Boolean)
-          .join(" "),
-        // shortenHome: a raw /Users/... prefix would make filters like
-        // "ser" match every agent.
-        search: `${a.task ?? ""} ${shortenHome(a.dir)} ${provider}`,
-        meta: [
-          `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
-          `provider ${provider}`,
-          `dir      ${shortenHome(a.dir)}`,
-          ...(a.worktreeBranch ? [`branch   ${a.worktreeBranch}`] : []),
-          ...(a.task ? [`task     ${a.task}`] : []),
-          `updated  ${relativeTime(a.updatedAt)}`,
-        ],
-      };
-    });
-  };
+  const load = fleetPickerItems;
 
   const handlers: PickerHandlers = {
-    highlight: (name: string) => {
+    highlight: (key: string) => {
       clearTimeout(highlightTimer);
-      highlightTimer = setTimeout(() => showAgent(name, false), HIGHLIGHT_DEBOUNCE_MS);
+      highlightTimer = setTimeout(() => showAgent(key, false), HIGHLIGHT_DEBOUNCE_MS);
     },
-    select: (name: string) => {
+    select: (key: string) => {
       clearTimeout(highlightTimer);
-      return showAgent(name, true);
+      return showAgent(key, true);
     },
-    stop: (name: string) => {
+    stop: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        const result = sshAm(host, ["stop", name]);
+        return result.exitCode === 0 ? `stopped ${name} on ${host}` : `stop failed: ${result.stderr.trim()}`;
+      }
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
     },
-    remove: (name: string) => {
+    remove: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        const result = sshAm(host, ["rm", name]);
+        return result.exitCode === 0 ? `removed ${name} on ${host}` : `rm failed: ${result.stderr.trim()}`;
+      }
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
@@ -202,7 +226,8 @@ export async function sidebarCommand(): Promise<void> {
     // Dir prompt prefill: the highlighted agent's dir (related work usually
     // lives in the same project), else the hub's launch dir.
     defaultDir: (highlighted: string | null) => {
-      const agent = highlighted ? readAgent(highlighted) : null;
+      const { host, name } = highlighted ? splitFleetKey(highlighted) : { host: undefined, name: "" };
+      const agent = !host && name ? readAgent(name) : null;
       return shortenHome(agent?.dir ?? process.cwd());
     },
     quit: () => {

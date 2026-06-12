@@ -13,7 +13,10 @@ import { resumeCommand, reviveAgent } from "./commands/resume";
 import { transcriptCommand } from "./commands/transcript";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
-import { isForwardable, remoteExec, stripHostArgs } from "./remote";
+import { exportCommand, importCommand, moveCommand } from "./commands/move";
+import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
+import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost } from "./fleet";
+import { loadConfig } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
 import { readSnapshot } from "./snapshots";
 import { expandHome } from "./paths";
@@ -62,6 +65,12 @@ remote (agents running on a server, am on your laptop):
                               (bare \`am -H box\` opens the full hub UI remotely)
   export AM_HOST=<host>       make every am command remote by default;
                               -L / --local forces a one-off local run
+  am ls [--local-only]        merged fleet across config.remotes hosts
+  am move <name> <host>       move an agent to <host>: conversation + queue
+  am move <host>:<name>       ...or pull one back from <host>
+                              (--dir overrides the $HOME-mapped target dir,
+                               --copy keeps the source, --force ignores dirty
+                               git, --no-start skips auto-resume)
 `;
 
 interface ParsedArgs {
@@ -110,44 +119,74 @@ function messageFrom(args: ParsedArgs): string {
   return message;
 }
 
+// Agent-targeting commands resolve across the whole fleet: an explicit
+// host:name always routes to that host, and a prefix that matches nothing
+// local but exactly one remote agent forwards there transparently — so
+// `am send demo "..."` works no matter which machine demo lives on.
+const AGENT_COMMANDS = new Set([
+  "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff",
+]);
+
+function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv: string[]): void {
+  if (!command || !AGENT_COMMANDS.has(command)) return;
+  const ref = args.positional[0];
+  if (!ref) return;
+
+  const { host: explicitHost, name: explicitName } = splitFleetKey(ref);
+  if (explicitHost && explicitName) {
+    const known = loadConfig().remotes ?? [];
+    if (known.includes(explicitHost)) {
+      remoteExec(explicitHost, argv.map((a) => (a === ref ? explicitName : a)));
+    }
+    return; // colon but unknown host — let local resolution complain
+  }
+
+  const localNames = listAgents().map((a) => a.name);
+  if (localNames.some((n) => n === ref || n.startsWith(ref))) return; // local wins
+
+  const remoteRows = fleetRows({ timeoutMs: 4000 }).rows.filter((r) => r.host);
+  const exact = remoteRows.filter((r) => r.name === ref);
+  const prefix = remoteRows.filter((r) => r.name.startsWith(ref));
+  const match = exact.length === 1 ? exact[0] : prefix.length === 1 ? prefix[0] : null;
+  if (match?.host) {
+    remoteExec(match.host, argv.map((a) => (a === ref ? match.name : a)));
+  }
+  if (prefix.length > 1) {
+    throw new Error(
+      `"${ref}" is ambiguous across hosts: ${prefix.map((r) => `${r.host}:${r.name}`).join(", ")}`,
+    );
+  }
+}
+
 async function pickerFlow(): Promise<void> {
-  const load = () => {
-    const agents = listAgents();
-    return agents.map((a) => {
-      const status = displayStatus(a);
-      const queued = queueDepth(a.name);
-      const provider = agentProvider(a);
-      return {
-        name: a.name,
-        label: `${STATUS_ICONS[status]} ${a.name}`,
-        right: [provider === "codex" ? "codex" : "", status, queued > 0 ? `· ${queued} queued` : ""]
-          .filter(Boolean)
-          .join(" "),
-        search: `${a.task ?? ""} ${shortenHome(a.dir)} ${provider}`,
-        meta: [
-          `status   ${status}${queued > 0 ? ` (${queued} queued)` : ""}`,
-          `provider ${provider}`,
-          `dir      ${shortenHome(a.dir)}`,
-          ...(a.worktreeBranch ? [`branch   ${a.worktreeBranch}`] : []),
-          ...(a.task ? [`task     ${a.task}`] : []),
-          `updated  ${relativeTime(a.updatedAt)}`,
-          `created  ${relativeTime(a.createdAt)}`,
-        ],
-      };
-    });
-  };
+  const load = fleetPickerItems;
   const handlers = {
-    stop: (name: string) => {
+    stop: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        const result = sshAm(host, ["stop", name]);
+        return result.exitCode === 0 ? `stopped ${name} on ${host}` : `stop failed: ${result.stderr.trim()}`;
+      }
       const agent = readAgent(name);
       if (agent) stopAgent(agent);
       return `stopped ${name} (resume with \`am resume ${name}\`)`;
     },
-    remove: (name: string) => {
+    remove: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        const result = sshAm(host, ["rm", name]);
+        return result.exitCode === 0 ? `removed ${name} on ${host}` : `rm failed: ${result.stderr.trim()}`;
+      }
       const agent = readAgent(name);
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
     },
-    preview: (name: string) => {
+    preview: (key: string) => {
+      const { host, name } = splitFleetKey(key);
+      if (host) {
+        if (!name) return [`(${host} unreachable)`];
+        return cachedRemotePreview(host, name) ?? [`(fetching ${name}@${shortHost(host)}…)`];
+      }
       const agent = readAgent(name);
       if (!agent) return [];
       const live = capturePane(agent.tmuxSession, { colors: true });
@@ -163,7 +202,8 @@ async function pickerFlow(): Promise<void> {
     // Dir prompt prefill: the highlighted agent's dir (related work usually
     // lives in the same project), else where `am` was launched from.
     defaultDir: (highlighted: string | null) => {
-      const agent = highlighted ? readAgent(highlighted) : null;
+      const { host, name } = highlighted ? splitFleetKey(highlighted) : { host: undefined, name: "" };
+      const agent = !host && name ? readAgent(name) : null;
       return shortenHome(agent?.dir ?? process.cwd());
     },
   };
@@ -175,11 +215,20 @@ async function pickerFlow(): Promise<void> {
   while (true) {
     const chosen = await pick(load, handlers, cameFrom);
     if (!chosen) break;
-    // Picking an exited/dead agent revives it before jumping in.
-    const picked = readAgent(chosen);
-    if (picked && !hasSession(picked.tmuxSession)) await reviveAgent(picked);
-    jumpCommand(chosen);
-    if (insideTmux()) break;
+    const { host, name } = splitFleetKey(chosen);
+    if (host) {
+      if (!name) continue; // unreachable-host placeholder row
+      // Revive dead remote agents, then attach over ssh until detach.
+      const row = cachedRemoteRow(host, name);
+      if (row && (row.status === "exited" || row.status === "dead")) sshAm(host, ["resume", name]);
+      sshAmInteractive(host, ["j", name]);
+    } else {
+      // Picking an exited/dead agent revives it before jumping in.
+      const picked = readAgent(name);
+      if (picked && !hasSession(picked.tmuxSession)) await reviveAgent(picked);
+      jumpCommand(name);
+      if (insideTmux()) break;
+    }
     if (load().length === 0) break;
     cameFrom = chosen;
   }
@@ -200,6 +249,7 @@ async function main(): Promise<void> {
   if (host && !forceLocal && isForwardable(command)) remoteExec(host, localArgv);
 
   const args = parseArgs(rest);
+  maybeForwardToFleet(command, args, localArgv);
 
   switch (command) {
     case undefined:
@@ -230,7 +280,7 @@ async function main(): Promise<void> {
       break;
     case "ls":
     case "list":
-      lsCommand({ json: !!args.flags.json });
+      lsCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
       break;
     case "j":
     case "jump":
@@ -265,6 +315,20 @@ async function main(): Promise<void> {
         full: !!args.flags.full,
         jump: args.flags["no-jump"] ? false : undefined,
       });
+      break;
+    case "move":
+      await moveCommand(requirePositional(args, 0, "agent (or host:agent)"), args.positional[1], {
+        dir: args.flags.dir as string | undefined,
+        copy: !!args.flags.copy,
+        force: !!args.flags.force,
+        start: !args.flags["no-start"],
+      });
+      break;
+    case "__export":
+      exportCommand(requirePositional(args, 0, "agent name"));
+      break;
+    case "__import":
+      await importCommand();
       break;
     case "stop": {
       const agent = resolveAgent(requirePositional(args, 0, "agent name"));

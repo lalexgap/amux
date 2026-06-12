@@ -25,16 +25,92 @@ export function isForwardable(command: string | undefined): boolean {
   return !command || (!command.startsWith("__") && command !== "hook");
 }
 
+export interface SshResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+// Login shell (bash -lc) so ~/.bun/bin lands on PATH for non-interactive
+// ssh; bash rather than sh because profiles routinely use bashisms
+// (`source`) that dash chokes on. argv is re-quoted to survive both ssh's
+// argument join and the remote shell.
+function sshArgv(host: string, remoteCommand: string, tty: boolean): string[] {
+  return ["ssh", ...(tty ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remoteCommand)}`];
+}
+
+export function amCommandString(args: string[]): string {
+  return ["am", ...args].map(shQuote).join(" ");
+}
+
+// Run `am <args>` on a remote host, capturing output. stdin (if given) is
+// piped to the remote command — used by `am move` to stream import payloads.
+export function sshAm(
+  host: string,
+  args: string[],
+  opts: { stdin?: string; timeoutMs?: number } = {},
+): SshResult {
+  const result = Bun.spawnSync(sshArgv(host, amCommandString(args), false), {
+    stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
+    timeout: opts.timeoutMs,
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
+}
+
+// Same, asynchronously — for the picker's background fleet refresh.
+export async function sshAmAsync(host: string, args: string[]): Promise<SshResult> {
+  const proc = Bun.spawn(sshArgv(host, amCommandString(args), false), {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { exitCode, stdout, stderr };
+}
+
+// Run `am <args>` remotely with the terminal attached (interactive jump from
+// the picker). Returns when the remote command does — unlike remoteExec it
+// does NOT exit the process.
+export function sshAmInteractive(host: string, args: string[]): number {
+  const result = Bun.spawnSync(sshArgv(host, amCommandString(args), true), {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return result.exitCode;
+}
+
+// Run a raw (non-am) command on the host, e.g. tmux capture-pane or test -d.
+export function sshRun(
+  host: string,
+  command: string,
+  opts: { timeoutMs?: number } = {},
+): SshResult {
+  const result = Bun.spawnSync(["ssh", host, "--", command], {
+    stdin: "ignore",
+    timeout: opts.timeoutMs,
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+  };
+}
+
 export function remoteExec(host: string, argv: string[]): never {
-  // Login shell so ~/.bun/bin lands on PATH for non-interactive ssh; bash
-  // rather than sh because profiles routinely use bashisms (`source`) that
-  // dash chokes on. argv is re-quoted to survive both ssh's argument join
-  // and the remote shell.
-  const remote = ["am", ...stripHostArgs(argv)].map(shQuote).join(" ");
   const interactive = !!process.stdin.isTTY && !!process.stdout.isTTY;
-  const result = Bun.spawnSync(
-    ["ssh", ...(interactive ? ["-t"] : []), host, "--", `bash -lc ${shQuote(remote)}`],
-    { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
-  );
+  const result = Bun.spawnSync(sshArgv(host, amCommandString(stripHostArgs(argv)), interactive), {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
   process.exit(result.exitCode);
 }

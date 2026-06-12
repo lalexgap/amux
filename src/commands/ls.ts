@@ -61,6 +61,11 @@ export interface AgentRow {
   queued: number;
   updatedAt: string;
   dir: string;
+  // Carried through from AgentState by the spread in agentRows() — declared
+  // so fleet/picker code can use them on rows that crossed a JSON boundary.
+  task?: string;
+  worktreeBranch?: string;
+  createdAt?: string;
 }
 
 export function agentRows(): AgentRow[] {
@@ -72,25 +77,36 @@ export function agentRows(): AgentRow[] {
   }));
 }
 
-export function formatRows(rows: AgentRow[]): string[] {
+export function formatRows(rows: (AgentRow & { host?: string })[]): string[] {
   if (rows.length === 0) return ["no agents — create one with `am new <name>`"];
   const nameWidth = Math.max(4, ...rows.map((r) => r.name.length));
   const statusWidth = Math.max(6, ...rows.map((r) => r.status.length));
-  const lines = [`  ${"NAME".padEnd(nameWidth)}  ${"STATUS".padEnd(statusWidth)}  AGENT   QUEUED  ACTIVITY  DIR`];
+  const withHost = rows.some((r) => r.host);
+  const hostWidth = withHost ? Math.max(4, ...rows.map((r) => (r.host ?? "local").length)) : 0;
+  const hostHeader = withHost ? `${"HOST".padEnd(hostWidth)}  ` : "";
+  const lines = [
+    `  ${"NAME".padEnd(nameWidth)}  ${hostHeader}${"STATUS".padEnd(statusWidth)}  AGENT   QUEUED  ACTIVITY  DIR`,
+  ];
   for (const r of rows) {
     const queued = r.queued > 0 ? String(r.queued) : "–";
+    const host = withHost ? `${(r.host ?? "local").padEnd(hostWidth)}  ` : "";
     lines.push(
-      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(statusWidth)}  ${r.provider.padEnd(6)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
+      `${STATUS_ICONS[r.status]} ${r.name.padEnd(nameWidth)}  ${host}${r.status.padEnd(statusWidth)}  ${r.provider.padEnd(6)}  ${queued.padEnd(6)}  ${relativeTime(r.updatedAt).padEnd(8)}  ${shortenHome(r.dir)}`,
     );
   }
   return lines;
 }
 
-export function lsCommand(opts: { json: boolean }): void {
-  const rows = agentRows();
+export function lsCommand(opts: { json: boolean; localOnly?: boolean }): void {
+  // Imported lazily to keep ls.ts free of a fleet→ls→fleet import cycle at
+  // module-eval time (fleet imports agentRows from here).
+  const { fleetRows } = require("../fleet") as typeof import("../fleet");
+  const fleet = fleetRows({ localOnly: opts.localOnly });
   if (opts.json) {
-    console.log(JSON.stringify(rows, null, 2));
+    console.log(JSON.stringify(fleet.rows, null, 2));
     return;
   }
-  console.log(formatRows(rows).join("\n"));
+  const lines = formatRows(fleet.rows);
+  for (const host of fleet.unreachable) lines.push(`\x1b[2m  (${host} unreachable)\x1b[0m`);
+  console.log(lines.join("\n"));
 }
