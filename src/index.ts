@@ -344,7 +344,7 @@ async function main(): Promise<void> {
       jumpPreviousCommand();
       break;
     case "send":
-      sendCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
+      await sendCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
         now: !!args.flags.now,
         from: args.flags.from as string | undefined,
       });

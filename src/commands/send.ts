@@ -23,11 +23,11 @@ function rateLimited(from: string, to: string): void {
   );
 }
 
-export function sendCommand(
+export async function sendCommand(
   prefix: string,
   message: string,
   opts: { now: boolean; from?: string },
-): void {
+): Promise<void> {
   const agent = requireLiveSession(prefix);
   const from = resolveSender(opts.from);
   const att = attribute(from, agent.name, message, opts.now ? "now" : "send");
@@ -44,7 +44,7 @@ export function sendCommand(
   const depth = queueAppend(agent.name, body);
   if (agent.status === "idle" || agent.status === "starting") {
     // Agent isn't working, so no Stop hook is coming — deliver right away.
-    deliverNext(agent.name);
+    await deliverNext(agent.name);
     console.log(`delivered to "${agent.name}" (was idle)`);
   } else {
     console.log(`queued for "${agent.name}" (${depth} in queue) — delivered when it goes idle`);

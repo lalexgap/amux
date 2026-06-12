@@ -161,7 +161,7 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
       const mode = body?.mode ?? "queue";
       try {
         if (mode === "interrupt") await interruptCommand(name, text);
-        else sendCommand(name, text, { now: mode === "now" });
+        else await sendCommand(name, text, { now: mode === "now" });
         return json({ ok: true, mode });
       } catch (error) {
         return json({ error: (error as Error).message }, 409);

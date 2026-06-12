@@ -9,7 +9,7 @@ import { hasSession } from "../tmux";
 function briefAgent(name: string, message: string): void {
   queueAppend(name, message);
   const agent = resolveAgent(name);
-  if (agent.status === "idle" || agent.status === "starting") deliverNext(name);
+  if (agent.status === "idle" || agent.status === "starting") void deliverNext(name);
 }
 
 export function reportCommand(prefix: string, opts: { to?: string; clear?: boolean }): void {

@@ -95,6 +95,10 @@ export function sendText(session: string, text: string, opts: { enterDelayMs?: n
   tmux("send-keys", "-t", paneTarget(session), "Enter");
 }
 
+export function sendEnter(session: string): void {
+  tmux("send-keys", "-t", paneTarget(session), "Enter");
+}
+
 export function sendEscape(session: string): void {
   tmux("send-keys", "-t", paneTarget(session), "Escape");
 }

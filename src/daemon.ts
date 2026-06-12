@@ -39,7 +39,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         if (event === "stop" && queueDepth(agent) > 0) {
           setTimeout(() => {
             try {
-              deliverNext(agent);
+              void deliverNext(agent);
             } catch (error) {
               console.error(`delivery to ${agent} failed:`, error);
             }
@@ -63,7 +63,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       }
       if (agent.status === "idle" && queueDepth(agent.name) > 0) {
         try {
-          deliverNext(agent.name);
+          void deliverNext(agent.name);
         } catch (error) {
           console.error(`delivery to ${agent.name} failed:`, error);
         }

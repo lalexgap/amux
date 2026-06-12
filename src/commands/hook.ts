@@ -74,7 +74,7 @@ function deliverReport(from: string, target: string, body: string): void {
   const att = attribute(from, target, body, "report");
   if (!att.allowed) return; // rate limited — a loop guard tripped
   queueAppend(target, att.body);
-  if (t.status === "idle" || t.status === "starting") deliverNext(target);
+  if (t.status === "idle" || t.status === "starting") void deliverNext(target);
 }
 
 export async function hookCommand(event: string): Promise<void> {
