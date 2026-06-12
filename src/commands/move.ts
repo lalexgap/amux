@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import {
   agentProvider,
@@ -102,6 +102,31 @@ export interface MoveOptions {
   copy: boolean;
   force: boolean;
   start: boolean;
+  // Clone: the source keeps running and nothing is removed — the
+  // conversation forks into two independent agents.
+  clone?: boolean;
+}
+
+// Queued as the migrated agent's first message: its history is full of
+// now-stale environment facts (paths, running processes, OS conventions),
+// and without a heads-up it will confidently act on them.
+export function migrationBrief(opts: {
+  from: string;
+  to: string;
+  oldDir: string;
+  newDir: string;
+  clone: boolean;
+}): string {
+  return [
+    opts.clone
+      ? `[am] You are a CLONE of an agent on ${opts.from} — the original keeps running there in ${opts.oldDir}; you are an independent copy on ${opts.to} in ${opts.newDir}. Work here may diverge from the original's.`
+      : `[am] You were just MOVED to a different machine: this conversation previously ran on ${opts.from} in ${opts.oldDir}; you are now on ${opts.to} in ${opts.newDir}.`,
+    `Your history is intact but the environment is not the one you remember:`,
+    `- absolute paths from earlier (under ${opts.oldDir}) likely don't exist here — your working directory is now ${opts.newDir}`,
+    `- processes, dev servers, and shell state from before are gone`,
+    `- OS, installed tools, and credentials may differ`,
+    `Briefly re-verify the repo/file state before continuing your work.`,
+  ].join("\n");
 }
 
 function remoteHome(host: string): string {
@@ -137,7 +162,7 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     throw new Error(`target dir missing on ${host}: ${targetDir} — create/clone it first, or pass --dir`);
   }
 
-  stopAgent(agent); // exactly one live copy, ever
+  if (!opts.clone) stopAgent(agent); // a move never leaves two live copies
 
   // Ship the conversation file (if the agent ever ran a turn).
   const transcript = sourceTranscript(agent);
@@ -166,15 +191,26 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
       worktreeBranch: undefined,
       repoRoot: undefined,
     },
-    queue: queueList(agent.name).map((m) => m.message),
+    queue: [
+      migrationBrief({
+        from: hostname(),
+        to: host,
+        oldDir: agent.dir,
+        newDir: targetDir,
+        clone: !!opts.clone,
+      }),
+      ...queueList(agent.name).map((m) => m.message),
+    ],
   };
   const imported = sshAm(host, ["__import"], { stdin: JSON.stringify(payload), timeoutMs: 20000 });
   if (imported.exitCode !== 0) {
     throw new Error(`import on ${host} failed: ${(imported.stderr + imported.stdout).trim()}`);
   }
 
-  if (!opts.copy) destroyAgent(agent, { clean: false });
-  let message = `moved "${agent.name}" → ${host}:${targetDir}${opts.copy ? " (local copy kept)" : ""}`;
+  if (!opts.copy && !opts.clone) destroyAgent(agent, { clean: false });
+  let message = opts.clone
+    ? `cloned "${agent.name}" → ${host}:${targetDir} (original still here)`
+    : `moved "${agent.name}" → ${host}:${targetDir}${opts.copy ? " (local copy kept)" : ""}`;
 
   if (opts.start) {
     const resumed = sshAm(host, ["resume", agent.name], { timeoutMs: 30000 });
@@ -208,8 +244,9 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
     throw new Error(`target dir missing locally: ${targetDir} — create/clone it first, or pass --dir`);
   }
 
-  // Stop it remotely before copying the conversation so the file is final.
-  sshAm(host, ["stop", name], { timeoutMs: 15000 });
+  // Stop it remotely before copying the conversation so the file is final
+  // (clones leave the original running and accept a snapshot).
+  if (!opts.clone) sshAm(host, ["stop", name], { timeoutMs: 15000 });
 
   const sessionId = agentSessionId(remote.state);
   let localTranscriptPath: string | undefined;
@@ -225,12 +262,23 @@ async function pullAgent(name: string, host: string, opts: MoveOptions): Promise
   importPayload(
     JSON.stringify({
       state: { ...remote.state, dir: targetDir, transcriptPath: localTranscriptPath },
-      queue: remote.queue,
+      queue: [
+        migrationBrief({
+          from: host,
+          to: hostname(),
+          oldDir: remote.state.dir,
+          newDir: targetDir,
+          clone: !!opts.clone,
+        }),
+        ...remote.queue,
+      ],
     }),
   );
 
-  if (!opts.copy) sshAm(host, ["rm", name], { timeoutMs: 15000 });
-  let message = `moved "${name}" ← ${host} (now in ${targetDir})${opts.copy ? " (remote copy kept)" : ""}`;
+  if (!opts.copy && !opts.clone) sshAm(host, ["rm", name], { timeoutMs: 15000 });
+  let message = opts.clone
+    ? `cloned "${name}" ← ${host} (original still on ${host})`
+    : `moved "${name}" ← ${host} (now in ${targetDir})${opts.copy ? " (remote copy kept)" : ""}`;
 
   if (opts.start) {
     const { reviveAgent } = await import("./resume");

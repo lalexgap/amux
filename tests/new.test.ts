@@ -87,3 +87,15 @@ describe("scrubNestedSessionEnv", () => {
     }
   });
 });
+
+describe("wrapText", () => {
+  test("wraps words, respects newlines, caps lines", async () => {
+    const { wrapText } = await import("../src/picker");
+    expect(wrapText("a bb ccc", 5, 6)).toEqual(["a bb", "ccc"]);
+    expect(wrapText("one\ntwo", 10, 6)).toEqual(["one", "two"]);
+    expect(wrapText("aaaaaaaaaa", 4, 6)).toEqual(["aaaa", "aaaa", "aa"]);
+    const capped = wrapText("w ".repeat(40), 4, 3);
+    expect(capped).toHaveLength(3);
+    expect(capped[2]).toBe("…");
+  });
+});

@@ -72,6 +72,8 @@ remote (agents running on a server, am on your laptop):
                               (--dir overrides the $HOME-mapped target dir,
                                --copy keeps the source, --force ignores dirty
                                git, --no-start skips auto-resume)
+  am clone <name> <host>      like move, but the source keeps running — the
+                              conversation forks into two independent agents
 `;
 
 interface ParsedArgs {
@@ -320,11 +322,13 @@ async function main(): Promise<void> {
       });
       break;
     case "move":
+    case "clone":
       await moveCommand(requirePositional(args, 0, "agent (or host:agent)"), args.positional[1], {
         dir: args.flags.dir as string | undefined,
         copy: !!args.flags.copy,
         force: !!args.flags.force,
         start: !args.flags["no-start"],
+        clone: command === "clone",
       });
       break;
     case "__export":

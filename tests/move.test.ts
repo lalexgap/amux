@@ -142,3 +142,21 @@ describe("dirtyGitFiles", () => {
     }
   });
 });
+
+describe("migrationBrief", () => {
+  test("move wording names both machines and dirs", async () => {
+    const { migrationBrief } = await import("../src/commands/move");
+    const brief = migrationBrief({ from: "laptop", to: "gapserver", oldDir: "/Users/x", newDir: "/home/x", clone: false });
+    expect(brief).toContain("MOVED");
+    expect(brief).toContain("laptop");
+    expect(brief).toContain("/home/x");
+    expect(brief).toContain("re-verify");
+  });
+
+  test("clone wording says the original keeps running", async () => {
+    const { migrationBrief } = await import("../src/commands/move");
+    const brief = migrationBrief({ from: "laptop", to: "gapserver", oldDir: "/a", newDir: "/b", clone: true });
+    expect(brief).toContain("CLONE");
+    expect(brief).toContain("original keeps running");
+  });
+});

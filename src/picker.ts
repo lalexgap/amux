@@ -133,6 +133,38 @@ const INVERSE = "\x1b[7m";
 
 const HELP = "f filter · ↑/↓/j/k · enter jumps (ctrl-q returns) · n new · m move · h handoff · x stop · d remove · q/esc quit";
 
+const MAX_FEEDBACK_LINES = 6;
+
+// Word-wrap feedback/error messages so they aren't clipped to one line in a
+// narrow sidebar; respects embedded newlines, caps the height with an
+// ellipsis line.
+export function wrapText(text: string, width: number, maxLines: number): string[] {
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (line && candidate.length > width) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+    lines.push(line);
+  }
+  // Hard-split any single word longer than the width.
+  const split = lines.flatMap((l) => {
+    const out: string[] = [];
+    for (let i = 0; i < Math.max(1, Math.ceil(l.length / Math.max(1, width))); i++) {
+      out.push(l.slice(i * width, (i + 1) * width));
+    }
+    return out;
+  });
+  if (split.length > maxLines) return [...split.slice(0, maxLines - 1), "…"];
+  return split;
+}
+
 // Pack " · "-separated help tokens into lines that fit the width, so narrow
 // panes (the am ui sidebar) show all the keys instead of a clipped line.
 export function wrapTokens(text: string, width: number): string[] {
@@ -201,7 +233,7 @@ export async function pick(
       : confirmRemove
         ? [`\x1b[31mremove "${confirmRemove}"? d again to confirm\x1b[0m`]
         : feedback
-          ? [`\x1b[33m${clipLine(feedback, cols)}\x1b[0m`]
+          ? wrapText(feedback, cols, MAX_FEEDBACK_LINES).map((l) => `\x1b[33m${l}\x1b[0m`)
           : wrapTokens(handlers.help ?? HELP, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
     const bodyRows = Math.max(1, rows - footerLines.length);
 
