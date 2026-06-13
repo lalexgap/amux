@@ -223,11 +223,14 @@ body, queuedAt, ttlMs}` (TTL ~48h, `config.outboxTtlHours`) and prints "queued i
 outbox for pickup". `am outbox` inspects it. The body is stored **raw** —
 attribution is applied later, by the collector.
 
-**Collector side (the laptop, which has remotes configured).** The daemon's
-15-second reconcile loop sweeps each remote with `am __outbox-take <local
+**Collector side (the laptop, which has remotes configured).** A daemon poll
+(every `outboxPollSeconds`, default 5s — its own interval, separate from the 15s
+local self-heal reconcile) sweeps each remote with `am __outbox-take <local
 names…>` over ssh (`sshAmAsync`, non-blocking) — an atomic return-and-remove of
 entries addressed to names this machine owns. (`__`-prefixed so it's internal
-and never fleet-forwarded; `am outbox [--clear]` is the human-facing view.) Each is injected through the
+and never fleet-forwarded; `am outbox [--clear]` is the human-facing view.)
+Lower the interval for snappier delivery at the cost of one ssh per remote per
+tick; `0` disables collection. Each is injected through the
 normal `attribute()` path, the sender **qualified by host** so the recipient
 sees `[am · from <name>@<host>] …`, then delivered on idle (`deliverNext`).
 

@@ -121,14 +121,23 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         }
       }
     }
-    // Pull any store-and-forward messages waiting on the remotes for our
-    // local agents. Fire-and-forget — must not stall the reconcile tick.
-    void collectFromRemotes().catch((error) => console.error("outbox collect failed:", error));
   }, RECONCILE_INTERVAL_MS);
+
+  // Pull store-and-forward messages from the remotes on a separate, faster
+  // cadence than the local self-heal — outbox latency is user-facing, so it
+  // gets its own (configurable) interval instead of riding the 15s reconcile.
+  // The `collecting` guard keeps a slow sweep from piling up.
+  const pollMs = Math.max(1, loadConfig().outboxPollSeconds) * 1000;
+  const collector = loadConfig().outboxPollSeconds > 0
+    ? setInterval(() => {
+        void collectFromRemotes().catch((error) => console.error("outbox collect failed:", error));
+      }, pollMs)
+    : null;
 
   return {
     stop() {
       clearInterval(reconciler);
+      if (collector) clearInterval(collector);
       server.stop(true);
       rmSync(socketPath, { force: true });
     },
