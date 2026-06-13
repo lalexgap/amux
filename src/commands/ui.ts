@@ -93,13 +93,34 @@ export function createHub(): void {
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
   tmux("set-option", "-t", hubTarget(), "set-titles-string", "am");
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
-  tmux("bind-key", "-T", "am-hub", "C-q", "select-pane", "-l");
+  applyHubBindings();
   tmux("set-option", "-t", hubTarget(), "key-table", "am-hub");
 }
 
+// Key tables are server-global; re-applied on every attach so lingering hubs
+// pick up binding changes without a recreate.
+function applyHubBindings(): void {
+  tmux("bind-key", "-T", "am-hub", "C-q", "select-pane", "-l");
+  // URL clicks are handled OUTER-side: the right pane's visible text IS the
+  // (possibly remote) agent screen, so the local am extracts the URL and
+  // opens it on THIS machine — a remote session's am __click would run
+  // headless on the server and open nothing here. Non-URL clicks forward.
+  const clickHandler = `run-shell -b "${process.execPath} ${cliEntrypoint()} __click #{pane_id} #{mouse_x} #{mouse_y}"`;
+  tmux(
+    "bind-key", "-T", "am-hub", "MouseDown1Pane",
+    "if-shell", "-F", "-t=", "#{m|r:https?://,#{mouse_line}}",
+    clickHandler,
+    "send-keys -M -t=",
+  );
+}
+
 export function uiCommand(): void {
-  if (!hasSession(HUB_SESSION)) createHub();
-  else refreshSidebar();
+  if (!hasSession(HUB_SESSION)) {
+    createHub();
+  } else {
+    refreshSidebar();
+    applyHubBindings();
+  }
   attachOrSwitch(HUB_SESSION);
 }
 
