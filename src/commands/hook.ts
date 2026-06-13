@@ -1,12 +1,13 @@
 import { readAgent, writeAgent, type AgentStatus } from "../state";
-import { queueDepth } from "../queue";
-import { spawnDeliver } from "../deliver";
+import { queueAppend, queueDepth } from "../queue";
+import { deliverNext, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
 import { paneWaitingInfo } from "./ls";
 import { writeSnapshot } from "../snapshots";
-import { capturePane, hasAttachedClient } from "../tmux";
+import { capturePane, hasAttachedClient, hasSession } from "../tmux";
+import { attribute, hasMessagedSince, shouldReport } from "../comms";
 
 async function readStdinPayload(): Promise<Record<string, unknown>> {
   if (process.stdin.isTTY) return {};
@@ -64,6 +65,19 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
   }
 }
 
+// Send a backstop report to a local, live reportTo target. Cross-host targets
+// are out of scope for the hook (it must exit fast and can't block on ssh);
+// the agent's own `am send` covers those via fleet resolution.
+async function deliverReport(from: string, target: string, body: string): Promise<void> {
+  const t = readAgent(target);
+  if (!t || !hasSession(t.tmuxSession)) return;
+  const att = attribute(from, target, body, "report");
+  if (!att.allowed) return; // rate limited — a loop guard tripped
+  queueAppend(target, att.body);
+  // Await so the verify-and-retry in deliverNext finishes before the hook exits.
+  if (t.status === "idle" || t.status === "starting") await deliverNext(target);
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const name = process.env.AGENTMGR_AGENT;
   if (!name) return; // not a managed session
@@ -73,8 +87,9 @@ export async function hookCommand(event: string): Promise<void> {
   const payload = await readStdinPayload();
   const effects = hookEffects(event, payload);
 
-  const workedSeconds = agent.workingSince
-    ? Math.max(0, (Date.now() - Date.parse(agent.workingSince)) / 1000)
+  const workingSince = agent.workingSince;
+  const workedSeconds = workingSince
+    ? Math.max(0, (Date.now() - Date.parse(workingSince)) / 1000)
     : 0;
 
   agent.status = effects.status;
@@ -92,6 +107,26 @@ export async function hookCommand(event: string): Promise<void> {
   if (event === "stop" || event === "session-end") {
     pane = capturePane(agent.tmuxSession, { colors: true });
     if (pane && pane.length > 0) writeSnapshot(name, pane);
+  }
+
+  // Standing-relationship backstop: if the agent finished a real work stint
+  // and didn't post its own update to reportTo, send a terse heads-up so the
+  // lead always hears something. attribute() applies the rate limiter.
+  if (event === "stop" && agent.reportTo) {
+    const alreadyReported = workingSince
+      ? hasMessagedSince(name, agent.reportTo, workingSince)
+      : false;
+    if (
+      shouldReport({
+        reportTo: agent.reportTo,
+        workedSeconds,
+        minSeconds: loadConfig().idleNotifyMinSeconds,
+        alreadyReported,
+      })
+    ) {
+      const body = `went idle after ${formatDuration(workedSeconds)}${agent.task ? ` · task: ${agent.task}` : ""}`;
+      await deliverReport(name, agent.reportTo, body);
+    }
   }
 
   if (effects.notify) notify(`am: ${name}`, effects.notify);

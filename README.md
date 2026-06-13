@@ -57,7 +57,11 @@ am ls                    # status table (--json for scripting)
 
 am send api "then update the changelog"    # queued; delivered when idle
 am send api --now "prefer the v2 endpoint" # typed in immediately (steers current turn)
+am send api --file ./patch.diff            # hand off a file (cross-machine too)
 am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
+
+am report api --to lead   # api now reports progress to lead (see below)
+am comms api              # recent messages to/from api
 
 am transcript api        # render the agent's conversation as markdown
                          # (--full keeps complete tool output; --out <file>)
@@ -76,6 +80,65 @@ am serve                 # HTTP API + installable PWA to watch/message the fleet
                          # from a phone (token-gated; put it behind a tailnet)
 am token                 # print the bearer token to paste into the PWA
 ```
+
+### Agents talking to each other
+
+Agents can message each other with the same `am send` you use — and `am` adds
+the structure that makes a conversation work:
+
+- **Attribution is automatic.** A send from inside an agent's session is stamped
+  with who sent it, so the recipient sees `[am · from api] tests are green` and
+  knows it's a peer (not you, the operator). Replying is just
+  `am send api "..."` — it routes back wherever `api` runs, across machines.
+  Cross-host senders are qualified (`[am · from laptop:api]`) so the reply still
+  finds them. A question and its answer close with nothing extra.
+
+- **Standing report relationships.** Give an agent a lead to keep posted:
+
+  ```sh
+  am new worker -m "…" --report-to lead   # report to a named agent
+  am new worker -m "…" --report           # …to whoever spawned it
+  am report worker --to lead              # set/change later (--clear to drop)
+  ```
+
+  The agent is briefed to post its own summaries with `am send lead`. As a
+  backstop, when it finishes a real work stint without reporting, `am` sends
+  `lead` a terse "went idle after 4m · task: …" so the lead always hears
+  something.
+
+- **Handing off files.** `am send <name> --file <path>` ships a file to another
+  agent — across machines too. It lands in the recipient's inbox
+  (`~/.agent-manager/inbox/<name>/`, so it never touches their repo) and the
+  agent gets an attributed note pointing at the path:
+
+  ```sh
+  am send web --file ./report.pdf                  # → web's inbox + a note
+  am send box:web "ship this build" --file app.zip # to web on host `box`
+  ```
+
+  Remote handoffs scp the bytes over and forward only the note, reusing the same
+  transport as `am move`.
+
+- **Reaching a roaming agent (store-and-forward).** Cross-machine sends work
+  laptop→server directly (the laptop can ssh in). The reverse — server→laptop,
+  when the laptop roams and runs no sshd — has no live transport, so a send to an
+  unreachable target lands in an **outbox** instead of erroring:
+
+  ```sh
+  am send laptop-agent "the nightly finished"   # → queued in outbox for pickup
+  am outbox                                      # inspect what's waiting
+  ```
+
+  The laptop's daemon sweeps each configured remote's outbox every ~15s, pulls
+  anything addressed to its local agents, and delivers it attributed by origin
+  (`[am · from web@server] …`). Entries expire after ~48h (`outboxTtlHours`) and
+  a bounce is surfaced back to the sender — never a silent drop. (Both machines
+  need this version of `am` for the round trip.)
+
+- **Loop-safe.** A per-pair rate limiter (default 5 messages / 60s, tunable via
+  `commsMaxPerWindow` / `commsWindowSeconds` in config) drops runaway A→B→A
+  chatter with a warning — at injection time, so a cross-machine loop trips the
+  same guard. `am comms <name>` shows the recent traffic the limiter sees.
 
 ### Phone access (PWA)
 

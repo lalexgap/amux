@@ -171,3 +171,23 @@ describe("sectionFor", () => {
     expect(sectionFor(row({ dir: "/mnt/fastdata/code/app" }) as never, "dir")).toBe("app");
   });
 });
+
+describe("swallowed-Enter detection", () => {
+  const SEP = "─".repeat(40);
+
+  test("multi-line claude sends get a paste-settle delay", async () => {
+    const { enterDelayMs } = await import("../src/deliver");
+    const claude = { name: "x", provider: "claude" } as never;
+    expect(enterDelayMs(claude, "one line")).toBeUndefined();
+    expect(enterDelayMs(claude, "[am] line one\nline two")).toBe(200);
+  });
+
+  test("looksUnsubmitted spots the message stuck in the input box", async () => {
+    const { looksUnsubmitted } = await import("../src/deliver");
+    const msg = "[am] You were just MOVED to a different machine: blah\nmore";
+    const stuck = ["⏺ earlier reply", SEP, "❯ [am] You were just MOVED to a diff", "  erent machine: blah more", SEP, "  1 shell"];
+    const submitted = ["❯ [am] You were just MOVED to a different machine: blah", "⏺ Re-orienting…", SEP, "❯ ", SEP, "  30k tokens"];
+    expect(looksUnsubmitted(stuck, msg)).toBe(true);
+    expect(looksUnsubmitted(submitted, msg)).toBe(false);
+  });
+});

@@ -399,4 +399,13 @@ if (urlToken) {
   history.replaceState({}, "", location.pathname);
 }
 
+// URL bootstrap: visiting /?token=… stores the token and strips it from the
+// visible URL — lets you skip the paste field entirely on iOS.
+const urlToken = new URLSearchParams(location.search).get("token");
+if (urlToken) {
+  token = urlToken.trim();
+  localStorage.setItem(TOKEN_KEY, token);
+  history.replaceState({}, "", location.pathname);
+}
+
 go({ name: "list" }); // renders the token gate first when no token is stored

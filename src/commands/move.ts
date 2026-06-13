@@ -173,7 +173,7 @@ async function settleBeforeMoveRemote(host: string, name: string, status: string
   }
 }
 
-async function remoteHome(host: string): Promise<string> {
+export async function remoteHome(host: string): Promise<string> {
   const result = await sshRunAsync(host, "echo $HOME", { timeoutMs: 8000 });
   const home = result.stdout.trim();
   if (result.exitCode !== 0 || !home.startsWith("/")) {

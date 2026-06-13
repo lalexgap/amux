@@ -1,5 +1,8 @@
 import { homedir } from "node:os";
-import { agentProvider, listAgents, type AgentState, type Provider } from "../state";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { agentProvider, agentSessionId, listAgents, type AgentState, type Provider } from "../state";
+import { claudeProjectSlug } from "../transcript";
 import { queueDepth } from "../queue";
 import { capturePane, hasSession } from "../tmux";
 
@@ -37,11 +40,12 @@ export const STATUS_COLORS: Record<DisplayStatus, string> = {
 const WAITING_PATTERNS = [
   /\bwake-?up\b/i, // scheduled wake-up countdowns (/loop, ScheduleWakeup)
   /\bbackground task/i,
-  /\bbash(es)? running/i,
+  /\bbash(es)? running/i, // older Claude Code wording
+  /\b\d+ shells?\b/i, // current wording: "1 shell · ← for agents"
 ];
 const SEPARATOR_RE = /─{8,}/;
 const STATUS_REGION_FALLBACK_LINES = 4;
-const DETAIL_MAX = 48;
+const DETAIL_MAX = 64;
 
 export interface WaitingInfo {
   waiting: boolean;
@@ -74,6 +78,76 @@ function clipDetail(text: string): string {
   return text.length > DETAIL_MAX ? text.slice(0, DETAIL_MAX - 1) + "…" : text;
 }
 
+// Background watchers (gh pr checks --watch, log pollers, sleep-then-act
+// chains) stream their output to the session tasks directory — the pane only
+// says "N bashes running", but the freshest task file's tail says what
+// they're actually doing (agents write greppable verdict lines there).
+export function sessionTasksDir(agent: AgentState): string | null {
+  const sessionId = agentSessionId(agent);
+  if (!sessionId) return null;
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return join("/tmp", `claude-${uid}`, claudeProjectSlug(agent.dir), sessionId, "tasks");
+}
+
+export function lastNonEmptyLine(text: string): string | null {
+  const lines = text
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return lines.length ? lines[lines.length - 1]! : null;
+}
+
+const TAIL_BYTES = 4096;
+function fileTail(path: string): string {
+  const size = statSync(path).size;
+  const fd = openSync(path, "r");
+  try {
+    const length = Math.min(TAIL_BYTES, size);
+    const buf = Buffer.alloc(length);
+    readSync(fd, buf, 0, length, Math.max(0, size - length));
+    return buf.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const BG_RECENT_MS = 30 * 60 * 1000;
+
+export interface BackgroundTasks {
+  count: number; // files touched in the last 30 minutes
+  lastLine: string | null; // tail of the freshest output file
+  ageSeconds: number;
+}
+
+export function backgroundTasks(agent: AgentState): BackgroundTasks | null {
+  const dir = sessionTasksDir(agent);
+  if (!dir || !existsSync(dir)) return null;
+  const files: { path: string; mtime: number }[] = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".output")) continue;
+    try {
+      files.push({ path: join(dir, f), mtime: statSync(join(dir, f)).mtimeMs });
+    } catch {
+      // raced a cleanup
+    }
+  }
+  if (files.length === 0) return null;
+  files.sort((a, b) => b.mtime - a.mtime);
+  const freshest = files[0]!;
+  let lastLine: string | null = null;
+  try {
+    lastLine = lastNonEmptyLine(fileTail(freshest.path));
+  } catch {
+    // unreadable tail is fine — fall back to the pane detail
+  }
+  return {
+    count: files.filter((f) => Date.now() - f.mtime < BG_RECENT_MS).length,
+    lastLine,
+    ageSeconds: Math.max(0, (Date.now() - freshest.mtime) / 1000),
+  };
+}
+
 // The scrape forks a tmux subprocess; the sidebar reloads every second and
 // the daemon serves /agents per request, so cache per agent for a few
 // seconds — waiting state doesn't flicker that fast.
@@ -84,7 +158,16 @@ export function waitingInfo(agent: AgentState): WaitingInfo {
   const cached = waitingCache.get(agent.tmuxSession);
   if (cached && Date.now() - cached.at < WAITING_CACHE_MS) return cached.info;
   const pane = capturePane(agent.tmuxSession);
-  const info = pane ? paneWaitingInfo(pane) : { waiting: false };
+  let info: WaitingInfo = pane ? paneWaitingInfo(pane) : { waiting: false };
+  // Waiting on background tasks: the pane says how many, the tasks dir says
+  // what they're doing — show the freshest watcher's last output line.
+  if (info.waiting && /background|bash|shell/i.test(info.detail ?? "")) {
+    const bg = backgroundTasks(agent);
+    if (bg?.lastLine) {
+      const stale = bg.ageSeconds > 600 ? ` (${Math.floor(bg.ageSeconds / 60)}m ago)` : "";
+      info = { waiting: true, detail: clipDetail(`${bg.count} bg — ${bg.lastLine}${stale}`) };
+    }
+  }
   waitingCache.set(agent.tmuxSession, { info, at: Date.now() });
   return info;
 }
@@ -120,6 +203,7 @@ export interface AgentRow {
   task?: string;
   worktreeBranch?: string;
   createdAt?: string;
+  reportTo?: string;
   // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
   statusDetail?: string;
   repoRoot?: string;

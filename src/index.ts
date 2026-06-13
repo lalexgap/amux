@@ -5,6 +5,10 @@ import { pick, type PickerHandlers } from "./picker";
 import { newCommand } from "./commands/new";
 import { lsCommand, displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./commands/ls";
 import { sendCommand, interruptCommand } from "./commands/send";
+import { reportCommand } from "./commands/report";
+import { sendFileCommand } from "./commands/sendfile";
+import { commsCommand } from "./commands/comms";
+import { outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
@@ -16,6 +20,7 @@ import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
+import { resolveSender } from "./comms";
 import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode } from "./fleet";
 import { loadConfig } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
@@ -45,6 +50,8 @@ usage:
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
                               --worktree <branch> picks the branch
+                              (--report-to <t> / --report make it report progress
+                               to <t> / to the agent that spawned it)
   am new <name> --resume [session-id] | --continue
                               spawn an agent from an existing conversation
                               (bare --resume opens the provider's session picker)
@@ -52,7 +59,19 @@ usage:
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
+  am send <name> -            read the message body from stdin (no shell quoting
+                              headaches: \`am transcript x | am send y -\`)
+  am send <name> [msg] --file <path>
+                              hand a file to the agent (works across machines):
+                              lands in its inbox, with a note pointing at it
   am interrupt <name> <msg>   abort current turn (Esc), then send message
+                              (sends from inside an agent are auto-attributed:
+                               the recipient sees "[am · from <you>] …")
+  am report <name> --to <t>   make <name> report progress to <t> (--clear drops
+                              it; bare \`am report <name>\` shows the relationship)
+  am comms <name>             recent messages to/from an agent
+  am outbox [--clear]         messages queued here for an unreachable target
+                              (store-and-forward; a collector picks them up)
   am queue <name> [--clear]   show or clear an agent's pending queue
   am transcript <name> [--full] [--out file]
                               render the agent's conversation as markdown
@@ -92,7 +111,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -133,16 +152,45 @@ function messageFrom(args: ParsedArgs): string {
   return message;
 }
 
+// `am send <name> -` reads the body from stdin, sidestepping the shell quoting
+// (backticks, quotes) that mangles messages passed as arguments — and composes
+// with pipes: `am transcript x | am send y -`.
+async function resolveMessage(args: ParsedArgs): Promise<string> {
+  const message = messageFrom(args);
+  if (message !== "-") return message;
+  const body = (await Bun.stdin.text()).replace(/\s+$/, "");
+  if (!body) throw new Error("no message on stdin");
+  return body;
+}
+
 // Agent-targeting commands resolve across the whole fleet: an explicit
 // host:name always routes to that host, and a prefix that matches nothing
 // local but exactly one remote agent forwards there transparently — so
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd",
+  "report", "comms",
 ]);
+
+// Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
+// survive ssh, so inject `--from <sender>` (host-qualified when this machine
+// knows its own alias) into the forwarded argv. Local resolution leaves
+// non-send commands and already-explicit --from untouched.
+function injectSender(command: string | undefined, argv: string[]): string[] {
+  if (command !== "send" && command !== "interrupt" && command !== "int") return argv;
+  if (argv.includes("--from")) return argv;
+  const sender = resolveSender();
+  if (!sender) return argv;
+  const alias = loadConfig().hostAlias;
+  return [...argv, "--from", alias ? `${alias}:${sender}` : sender];
+}
 
 function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv: string[]): void {
   if (!command || !AGENT_COMMANDS.has(command)) return;
+  // A file send routes itself: the file is local, so it scp's the bytes and
+  // forwards only the note — not the whole command (the path wouldn't exist on
+  // the far side).
+  if (command === "send" && args.flags.file) return;
   const ref = args.positional[0];
   if (!ref) return;
 
@@ -150,7 +198,7 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
   if (explicitHost && explicitName) {
     const known = loadConfig().remotes ?? [];
     if (known.includes(explicitHost)) {
-      remoteExec(explicitHost, argv.map((a) => (a === ref ? explicitName : a)));
+      remoteExec(explicitHost, injectSender(command, argv.map((a) => (a === ref ? explicitName : a))));
     }
     return; // colon but unknown host — let local resolution complain
   }
@@ -163,7 +211,7 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
   const prefix = remoteRows.filter((r) => r.name.startsWith(ref));
   const match = exact.length === 1 ? exact[0] : prefix.length === 1 ? prefix[0] : null;
   if (match?.host) {
-    remoteExec(match.host, argv.map((a) => (a === ref ? match.name : a)));
+    remoteExec(match.host, injectSender(command, argv.map((a) => (a === ref ? match.name : a))));
   }
   if (prefix.length > 1) {
     throw new Error(
@@ -298,6 +346,8 @@ async function main(): Promise<void> {
         jump: args.flags["no-jump"] ? false : undefined,
         remote: args.flags.remote ? true : args.flags["no-remote"] ? false : undefined,
         inPlace: !!args.flags["in-place"],
+        reportTo: args.flags["report-to"] as string | undefined,
+        report: !!args.flags.report,
       });
       break;
     case "resume":
@@ -318,13 +368,39 @@ async function main(): Promise<void> {
       jumpPreviousCommand();
       break;
     case "send":
-      sendCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
-        now: !!args.flags.now,
-      });
+      if (args.flags.file) {
+        await sendFileCommand(requirePositional(args, 0, "agent name"), args.flags.file as string, {
+          message: args.positional.slice(1).join(" ") || undefined,
+          now: !!args.flags.now,
+          from: args.flags.from as string | undefined,
+        });
+      } else {
+        await sendCommand(requirePositional(args, 0, "agent name"), await resolveMessage(args), {
+          now: !!args.flags.now,
+          from: args.flags.from as string | undefined,
+        });
+      }
       break;
     case "interrupt":
     case "int":
-      await interruptCommand(requirePositional(args, 0, "agent name"), messageFrom(args));
+      await interruptCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
+        from: args.flags.from as string | undefined,
+      });
+      break;
+    case "report":
+      reportCommand(requirePositional(args, 0, "agent name"), {
+        to: args.flags.to as string | undefined,
+        clear: !!args.flags.clear,
+      });
+      break;
+    case "comms":
+      commsCommand(requirePositional(args, 0, "agent name"));
+      break;
+    case "outbox":
+      outboxCommand({ clear: !!args.flags.clear });
+      break;
+    case "__outbox-take":
+      outboxTakeCommand(args.positional);
       break;
     case "queue":
     case "q":

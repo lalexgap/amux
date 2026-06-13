@@ -41,6 +41,35 @@ export function snapshotsDir(): string {
   return join(baseDir(), "snapshots");
 }
 
+// Append-only ledger of inter-agent messages: powers the rate limiter, the
+// "did X already report this stint?" backstop check, and `am comms`.
+export function commsLogFile(): string {
+  return join(baseDir(), "comms.jsonl");
+}
+
+// Where files handed to an agent land (am send --file). A dedicated drop so a
+// handoff never clobbers the agent's repo/worktree; the note carries the path.
+export function inboxDir(name: string): string {
+  return join(baseDir(), "inbox", name);
+}
+
+// Store-and-forward for sends whose target can't be reached from here (the
+// reverse direction: a roaming laptop unreachable from the server). One JSONL
+// per target name; a collector with that name local sweeps and removes them.
+export function outboxDir(): string {
+  return join(baseDir(), "outbox");
+}
+
+export function outboxFile(to: string): string {
+  return join(outboxDir(), `${to.replace(/[^a-zA-Z0-9_-]/g, "_")}.jsonl`);
+}
+
+// Expired outbox entries land here instead of vanishing, so expiry stays
+// observable (am outbox) and can be surfaced back to the sender.
+export function outboxBouncesFile(): string {
+  return join(baseDir(), "outbox-bounces.jsonl");
+}
+
 export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }
