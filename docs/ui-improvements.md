@@ -136,6 +136,17 @@ visible at 38 cols. Remaining polish, lower priority:
 
 ---
 
+## P5 — Focus indicator (shipped)
+
+✅ The hub sidebar keeps painting on the left after you lock into the agent pane,
+so there was no signal of which pane your keystrokes drive. Added a top row:
+calm dim `● keys → sidebar` when the sidebar is active, loud black-on-yellow
+`▶ keys → session · ctrl-q ↩` when input is going to the locked-in agent. Focus
+comes from the pane's own `#{pane_active}` flag (polled on the refresh tick,
+re-polled the instant a lock-in happens), not fragile terminal focus-events.
+
+---
+
 ## Now on main (from agent-man-improvements)
 
 A key reorg landed on main and is merged into `am/am-ui`:
