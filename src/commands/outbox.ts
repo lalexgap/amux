@@ -1,4 +1,4 @@
-import { outboxList, outboxTake } from "../outbox";
+import { outboxClear, outboxList, outboxTake } from "../outbox";
 import { relativeTime } from "./ls";
 
 function clip(body: string, max = 50): string {
@@ -6,12 +6,19 @@ function clip(body: string, max = 50): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-// `am outbox --take <names...>`: atomically return-and-remove live entries for
-// those names as JSON. This is the collector's pickup call over ssh — the only
-// machine-readable path. Everything else is human inspection.
-export function outboxCommand(names: string[], opts: { take?: boolean }): void {
-  if (opts.take) {
-    console.log(JSON.stringify(outboxTake(names)));
+// `am __outbox-take <names...>`: atomically return-and-remove live entries for
+// those names as JSON. Internal (the collector's ssh pickup) — `__`-prefixed so
+// it's hidden and never fleet-forwarded.
+export function outboxTakeCommand(names: string[]): void {
+  console.log(JSON.stringify(outboxTake(names)));
+}
+
+// `am outbox [--clear]`: human inspection of what's queued here for pickup, plus
+// anything that expired undelivered. Reading is also when expiry happens.
+export function outboxCommand(opts: { clear?: boolean }): void {
+  if (opts.clear) {
+    outboxClear();
+    console.log("outbox cleared");
     return;
   }
 

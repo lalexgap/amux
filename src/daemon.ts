@@ -47,7 +47,7 @@ async function collectFromRemotes(): Promise<void> {
   collecting = true;
   try {
     for (const host of remotes) {
-      const res = await sshAmAsync(host, ["outbox", "--take", ...localNames], { timeoutMs: 8000 });
+      const res = await sshAmAsync(host, ["__outbox-take", ...localNames], { timeoutMs: 8000 });
       if (res.exitCode !== 0) continue; // unreachable, or remote am predates outbox
       let entries: OutboxEntry[];
       try {

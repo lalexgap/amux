@@ -224,9 +224,10 @@ outbox for pickup". `am outbox` inspects it. The body is stored **raw** —
 attribution is applied later, by the collector.
 
 **Collector side (the laptop, which has remotes configured).** The daemon's
-15-second reconcile loop sweeps each remote with `am outbox --take <local
+15-second reconcile loop sweeps each remote with `am __outbox-take <local
 names…>` over ssh (`sshAmAsync`, non-blocking) — an atomic return-and-remove of
-entries addressed to names this machine owns. Each is injected through the
+entries addressed to names this machine owns. (`__`-prefixed so it's internal
+and never fleet-forwarded; `am outbox [--clear]` is the human-facing view.) Each is injected through the
 normal `attribute()` path, the sender **qualified by host** so the recipient
 sees `[am · from <name>@<host>] …`, then delivered on idle (`deliverNext`).
 

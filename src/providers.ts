@@ -14,6 +14,8 @@ export function agentSystemPrompt(name: string, opts: { reportTo?: string } = {}
 When asked to spin up, message, check on, or stop OTHER AGENTS, use the am CLI via Bash — not your built-in Task/subagent tool (keep that for quick scoped subtasks inside this session):
 - am new <name> [-m "task"] [--dir <path> | --worktree <branch>] [--codex]   (names are global, pick a unique one)
 - am send <name> "msg"          queue a message, delivered when that agent goes idle
+  (for a message with backticks/quotes/newlines, pipe it instead to avoid shell
+   mangling: printf '%s' "\$msg" | am send <name> -)
 - am send <name> --now "msg"    steer its current turn immediately
 - am send <name> [msg] --file <path>   hand a file to that agent (even on another machine)
 - am interrupt <name> "msg"     abort its turn and redirect it

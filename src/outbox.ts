@@ -149,6 +149,12 @@ export function outboxList(now = Date.now()): OutboxView {
   return { live, bounced: readBounces() };
 }
 
+// Drop everything — pending entries and the bounces log. `am outbox --clear`.
+export function outboxClear(): void {
+  rmSync(outboxDir(), { recursive: true, force: true });
+  rmSync(outboxBouncesFile(), { force: true });
+}
+
 // Pull (and clear) the bounces originating from a given sender, so the next
 // `am send` from that agent can surface what expired undelivered.
 export function takeBouncesFrom(from: string): BouncedEntry[] {

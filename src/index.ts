@@ -8,7 +8,7 @@ import { sendCommand, interruptCommand } from "./commands/send";
 import { reportCommand } from "./commands/report";
 import { sendFileCommand } from "./commands/sendfile";
 import { commsCommand } from "./commands/comms";
-import { outboxCommand } from "./commands/outbox";
+import { outboxCommand, outboxTakeCommand } from "./commands/outbox";
 import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
@@ -59,6 +59,8 @@ usage:
   am ls [--json]              list agents with status and queue depth
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
+  am send <name> -            read the message body from stdin (no shell quoting
+                              headaches: \`am transcript x | am send y -\`)
   am send <name> [msg] --file <path>
                               hand a file to the agent (works across machines):
                               lands in its inbox, with a note pointing at it
@@ -68,7 +70,7 @@ usage:
   am report <name> --to <t>   make <name> report progress to <t> (--clear drops
                               it; bare \`am report <name>\` shows the relationship)
   am comms <name>             recent messages to/from an agent
-  am outbox                   messages queued here for an unreachable target
+  am outbox [--clear]         messages queued here for an unreachable target
                               (store-and-forward; a collector picks them up)
   am queue <name> [--clear]   show or clear an agent's pending queue
   am transcript <name> [--full] [--out file]
@@ -148,6 +150,17 @@ function messageFrom(args: ParsedArgs): string {
   const message = args.positional.slice(1).join(" ");
   if (!message) throw new Error("missing message — see `am help`");
   return message;
+}
+
+// `am send <name> -` reads the body from stdin, sidestepping the shell quoting
+// (backticks, quotes) that mangles messages passed as arguments — and composes
+// with pipes: `am transcript x | am send y -`.
+async function resolveMessage(args: ParsedArgs): Promise<string> {
+  const message = messageFrom(args);
+  if (message !== "-") return message;
+  const body = (await Bun.stdin.text()).replace(/\s+$/, "");
+  if (!body) throw new Error("no message on stdin");
+  return body;
 }
 
 // Agent-targeting commands resolve across the whole fleet: an explicit
@@ -362,7 +375,7 @@ async function main(): Promise<void> {
           from: args.flags.from as string | undefined,
         });
       } else {
-        await sendCommand(requirePositional(args, 0, "agent name"), messageFrom(args), {
+        await sendCommand(requirePositional(args, 0, "agent name"), await resolveMessage(args), {
           now: !!args.flags.now,
           from: args.flags.from as string | undefined,
         });
@@ -384,7 +397,10 @@ async function main(): Promise<void> {
       commsCommand(requirePositional(args, 0, "agent name"));
       break;
     case "outbox":
-      outboxCommand(args.positional, { take: !!args.flags.take });
+      outboxCommand({ clear: !!args.flags.clear });
+      break;
+    case "__outbox-take":
+      outboxTakeCommand(args.positional);
       break;
     case "queue":
     case "q":
