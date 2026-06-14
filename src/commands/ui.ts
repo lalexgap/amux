@@ -112,15 +112,23 @@ function applyHubBindings(): void {
     clickHandler,
     "send-keys -M -t=",
   );
-  // Forward wheel events straight into whichever pane is under the cursor.
-  // Both panes are full-screen nested apps (the picker, and a local-tmux or
-  // ssh→tmux attach) that scroll themselves. tmux's default only forwards
-  // when the pane advertises mouse mode (mouse_any_flag=1); a remote agent
-  // attached over ssh reports mouse_any_flag=0 because its mouse DECSET
-  // doesn't survive the ssh relay, so the outer tmux would otherwise hijack
-  // the wheel for its own copy-mode and the remote pane never scrolls.
-  tmux("bind-key", "-T", "am-hub", "WheelUpPane", "send-keys", "-M");
-  tmux("bind-key", "-T", "am-hub", "WheelDownPane", "send-keys", "-M");
+  // Scroll the pane under the cursor. Both panes are full-screen nested apps
+  // (the picker, and a local-tmux or ssh→tmux attach) that scroll themselves.
+  // Two cases:
+  //   • mouse_any_flag=1 — the pane advertises mouse mode (every local attach,
+  //     and a picker): forward the wheel verbatim with `send -M` and let the
+  //     inner app handle it.
+  //   • mouse_any_flag=0 — a remote agent over ssh, whose mouse DECSET doesn't
+  //     survive the relay so the outer tmux thinks it wants no mouse. `send -M`
+  //     is a NO-OP here (tmux has no mouse mode to encode into), so translate
+  //     the wheel into a PageUp/PageDown keypress instead — a plain key the
+  //     inner tmux always receives, where its own PPage/copy-mode binding
+  //     scrolls the scrollback. Without this the outer tmux hijacks the wheel
+  //     for its own (empty, alternate-screen) copy-mode — the telltale [0,0].
+  tmux("bind-key", "-T", "am-hub", "WheelUpPane",
+    "if-shell", "-F", "-t=", "#{mouse_any_flag}", "send-keys -M -t=", "send-keys -t= PPage");
+  tmux("bind-key", "-T", "am-hub", "WheelDownPane",
+    "if-shell", "-F", "-t=", "#{mouse_any_flag}", "send-keys -M -t=", "send-keys -t= NPage");
 }
 
 export function uiCommand(): void {
