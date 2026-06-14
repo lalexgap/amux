@@ -182,7 +182,26 @@ export async function sidebarCommand(): Promise<void> {
       }
       if (shown !== key) {
         tmux("set-option", "-t", hubTarget(), "set-titles-string", `${name}@${shortHost(host)}`);
-        sshRun(host, `tmux set-option -t '=agentmgr-${name}:' status off`, { timeoutMs: 4000 });
+        // Prep the remote session for the nested attach. Besides hiding its
+        // status bar, assert the scrollback bindings ON THE REMOTE: the hub
+        // forwards the wheel as a bare PageUp (a remote pane's mouse mode
+        // doesn't survive the ssh relay, so `send -M` is a no-op), and that
+        // PageUp only scrolls if the remote tmux intercepts it into copy-mode.
+        // A session created by an older `am`, or one moved here without a
+        // re-configure, may lack that binding — so we set it from this side
+        // rather than trust the remote's build. Mirrors configureAgentSession.
+        const remoteTarget = `'=agentmgr-${name}:'`;
+        sshRun(
+          host,
+          [
+            `tmux set-option -t ${remoteTarget} status off`,
+            `tmux set-option -t ${remoteTarget} key-table agentmgr`,
+            `tmux set-option -t ${remoteTarget} mouse on`,
+            `tmux bind-key -T agentmgr WheelUpPane copy-mode -e`,
+            `tmux bind-key -T agentmgr PPage copy-mode -eu`,
+          ].join("; "),
+          { timeoutMs: 4000 },
+        );
         const attach = `env -u TMUX ssh -t ${shQuote(host)} -- ${shQuote(`tmux attach-session -t '=agentmgr-${name}'`)}`;
         const respawned = tmux("respawn-pane", "-k", "-t", pane, attach);
         if (respawned.exitCode !== 0) return { text: `remote attach failed: ${respawned.stderr.trim()}`, level: "error" };
@@ -302,10 +321,6 @@ export async function sidebarCommand(): Promise<void> {
       const active = result.stdout.trim() === "1";
       return { active, text: active ? "keys → sidebar" : "keys → session · ctrl-q ↩" };
     },
-    // Re-assert the hub's key-table on every refresh tick so a long-lived,
-    // continuously-attached sidebar picks up binding changes (e.g. the remote
-    // wheel→PageUp scroll fix) without needing a fresh `am ui` attach.
-    onTick: applyHubBindings,
     help: HUB_HELP,
   };
 
