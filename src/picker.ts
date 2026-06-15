@@ -1,3 +1,7 @@
+import { readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname } from "node:path";
+
 export interface PickerItem {
   name: string;
   label: string;
@@ -85,6 +89,12 @@ export interface PickerHandlers {
   activity?: () => { active: boolean; text: string } | null;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
+  // The create flow opens a full-screen form. The sidebar paints only its own
+  // ~38-col pane, so the hub zooms that pane (tmux resize-pane -Z) while the
+  // form is up and un-zooms when it closes. Called with true on open, false on
+  // close (create success, cancel/esc, ctrl-c). `am pick` is already
+  // fullscreen, so it leaves this unset (no-op).
+  onForm?: (active: boolean) => void;
 }
 
 export function clipLine(line: string, width: number): string {
@@ -264,7 +274,7 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "new-host" | "cd-dir" | "edit";
+type Mode = "list" | "filter" | "new-form" | "cd-dir" | "edit";
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
   return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
@@ -281,6 +291,73 @@ export function editMenuHelp(handlers: PickerHandlers): string {
     handlers.remove && "d remove",
   ].filter(Boolean);
   return [...keys, "esc back"].join(" · ");
+}
+
+// The create form's fields. "where" (local vs a configured remote) only
+// appears when remotes exist, mirroring the old stepped flow.
+export function formFields(hasRemotes: boolean): string[] {
+  return hasRemotes ? ["name", "task", "dir", "where"] : ["name", "task", "dir"];
+}
+
+// Tab / Shift-Tab / ↑ / ↓ move the focus ring around the form, wrapping.
+export function cycleField(idx: number, count: number, delta: number): number {
+  if (count <= 0) return 0;
+  return (((idx + delta) % count) + count) % count;
+}
+
+function commonPrefix(strs: string[]): string {
+  if (strs.length === 0) return "";
+  let prefix = strs[0]!;
+  for (const s of strs) {
+    while (!s.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  }
+  return prefix;
+}
+
+function expandTilde(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return homedir() + path.slice(1);
+  return path;
+}
+
+export interface DirCompletion {
+  // The input after completion. Unchanged when there's nothing to complete.
+  value: string;
+  // Candidate basenames to display when the completion is ambiguous; empty
+  // when a unique completion was applied or there was nothing to match.
+  candidates: string[];
+}
+
+// Tab-completion for the Dir field against the LOCAL filesystem (directories
+// only — remote dirs stay manual). Expands ~ for reading but preserves the
+// literal head of the input (including ~) in the returned value, since
+// completion only ever rewrites the final path segment. A unique match is
+// completed and gets a trailing "/" so the next Tab descends into it; an
+// ambiguous one is completed to the common prefix and the candidates returned
+// for display in the form's roomy full-screen space.
+export function completeDir(input: string): DirCompletion {
+  const expanded = expandTilde(input);
+  // The directory to read and the prefix to match within it. A trailing slash
+  // means "list this directory" (empty prefix); otherwise the last segment is
+  // the prefix and its parent is the directory to read.
+  const dir = expanded.endsWith("/") ? expanded || "/" : dirname(expanded) || ".";
+  const slash = input.lastIndexOf("/");
+  const prefix = slash >= 0 ? input.slice(slash + 1) : input;
+  const head = slash >= 0 ? input.slice(0, slash + 1) : "";
+
+  let entries: string[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch {
+    return { value: input, candidates: [] };
+  }
+
+  const matches = entries.filter((n) => n.startsWith(prefix)).sort();
+  if (matches.length === 0) return { value: input, candidates: [] };
+  if (matches.length === 1) return { value: head + matches[0] + "/", candidates: [] };
+  return { value: head + commonPrefix(matches), candidates: matches };
 }
 
 export async function pick(
@@ -308,6 +385,11 @@ export async function pick(
   // The "where" step is only shown when at least one remote is configured.
   const hostOptions = ["local", ...(handlers.remotes ?? [])];
   let newHostIdx = 0;
+  // Full-screen create form: which field has the focus ring, and the dir
+  // autocomplete candidates to display (when the last Tab was ambiguous).
+  const fields = formFields(hostOptions.length > 1);
+  let formIdx = 0;
+  let formCandidates: string[] = [];
   let cdDir = "";
   let cdTarget: string | null = null;
   let creating = false;
@@ -321,12 +403,105 @@ export async function pick(
 
   const out = (s: string) => process.stdout.write(s);
 
+  // Zoom/un-zoom the sidebar pane around the full-screen form. Guarded: a
+  // throwing handler must never take the picker process down.
+  const setForm = (active: boolean) => {
+    try {
+      handlers.onForm?.(active);
+    } catch {
+      /* the form still works unzoomed; swallow */
+    }
+  };
+
   let showAll = false;
   const filtered = () => visibleItems(items, filter, showAll);
+
+  // The full-screen create form. Shows every field at once with a focus ring,
+  // rendered across the whole (zoomed) pane rather than the list's narrow
+  // column. Returns the screen as an array of rows.
+  const renderForm = (cols: number, rows: number): string[] => {
+    const labels: Record<string, string> = {
+      name: "Name",
+      task: "Task (optional)",
+      dir: "Dir",
+      where: "Where",
+    };
+    const labelW = 16;
+    const margin = "  ";
+
+    const fieldRow = (field: string, i: number): string => {
+      const focused = i === formIdx;
+      const marker = focused ? `${GREEN}❯${RESET} ` : "  ";
+      const label = focused ? labels[field]!.padEnd(labelW) : `${DIM}${labels[field]!.padEnd(labelW)}${RESET}`;
+      let value: string;
+      if (field === "name") value = newName + (focused ? "▌" : "");
+      else if (field === "task") value = newTask + (focused ? "▌" : "");
+      else if (field === "dir") value = newDir + (focused ? "▌" : "");
+      else {
+        value = hostOptions
+          .map((h, hi) =>
+            hi === newHostIdx ? (focused ? `${INVERSE} ${h} ${RESET}` : `[${h}]`) : ` ${h} `,
+          )
+          .join(" ");
+      }
+      return marker + label + value;
+    };
+
+    const lines: string[] = [];
+    lines.push("");
+    lines.push(`${margin}${GREEN}Create agent${RESET}`);
+    lines.push("");
+    fields.forEach((f, i) => lines.push(margin + fieldRow(f, i)));
+    lines.push("");
+
+    const active: FeedbackResult | null = creating
+      ? { text: `creating "${newName}"…`, level: "info" }
+      : feedback;
+    if (active) {
+      for (const cell of feedbackBanner(active, Math.min(cols - 2, 100))) {
+        lines.push(margin + (cell.style ?? "") + cell.text + RESET);
+      }
+      lines.push("");
+    }
+
+    // Dir autocomplete candidates, packed into columns across the wide pane.
+    if (formCandidates.length) {
+      lines.push(`${margin}${DIM}${formCandidates.length} matches:${RESET}`);
+      const colW = Math.min(cols - 4, Math.max(...formCandidates.map((c) => c.length)) + 2);
+      const perRow = Math.max(1, Math.floor((cols - margin.length) / colW));
+      const shown = formCandidates.slice(0, perRow * 8); // cap the height
+      for (let i = 0; i < shown.length; i += perRow) {
+        lines.push(margin + shown.slice(i, i + perRow).map((c) => c.padEnd(colW)).join(""));
+      }
+      if (shown.length < formCandidates.length) lines.push(`${margin}${DIM}…${RESET}`);
+    }
+
+    const footer = [
+      "Tab next/complete dir",
+      "⇧Tab back",
+      fields.includes("where") && "←/→ where",
+      "Enter create",
+      "Esc cancel",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const footerLines = wrapTokens(footer, cols - 2).map((l) => `${DIM}${l}${RESET}`);
+
+    // Pad the middle so the footer sits on the last rows.
+    while (lines.length < Math.max(0, rows - footerLines.length)) lines.push("");
+    lines.push(...footerLines);
+    return lines.slice(0, rows).map((l) => clipAnsi(l, cols));
+  };
 
   const render = () => {
     const cols = process.stdout.columns ?? 80;
     const rows = process.stdout.rows ?? 24;
+
+    if (mode === "new-form") {
+      out("\x1b[H" + renderForm(cols, rows).map((l) => CLEAR_LINE + l).join("\r\n"));
+      return;
+    }
+
     const showPreview = !!handlers.preview && cols >= 28 + MIN_PREVIEW_WIDTH + 2;
     const sidebarWidth = sidebarWidthFor(cols, showPreview);
     const previewWidth = cols - sidebarWidth - 2; // "│ " separator
@@ -359,17 +534,9 @@ export async function pick(
     }
 
     const header: Cell =
-      mode === "new-name"
-        ? { text: `new agent name: ${newName}▌` }
-        : mode === "new-task"
-          ? { text: `task (optional): ${newTask}▌` }
-          : mode === "new-dir"
-            ? { text: `dir: ${newDir}▌` }
-            : mode === "new-host"
-              ? { text: `where: ${hostOptions.map((h, i) => (i === newHostIdx ? `[${h}]` : ` ${h} `)).join(" ")}  ·  ←/→ enter` }
-            : mode === "cd-dir"
-              ? { text: `cd to: ${cdDir}▌` }
-            : mode === "filter"
+      mode === "cd-dir"
+        ? { text: `cd to: ${cdDir}▌` }
+        : mode === "filter"
             ? { text: `filter: ${filter}▌` }
             : filter
               ? { text: `filter: ${filter} · ⌫ clears` }
@@ -503,6 +670,7 @@ export async function pick(
     let finished = false;
     const finish = (value: string | null) => {
       finished = true;
+      if (mode === "new-form") setForm(false); // un-zoom if we exit mid-form
       clearInterval(refresh);
       process.stdout.off("resize", onResize);
       process.stdin.off("data", onData);
@@ -526,14 +694,19 @@ export async function pick(
           newTask = "";
           newDir = "";
           newHostIdx = 0;
+          formIdx = 0;
+          formCandidates = [];
+          setForm(false); // un-zoom the sidebar pane
           feedback = asFeedback(handlers.select(created));
           items = load();
           render();
         },
         (error: Error) => {
-          // Back to the name prompt with the input intact so it can be fixed.
+          // Stay in the form with the input intact so it can be fixed; keep
+          // the pane zoomed (the form is still up).
           creating = false;
-          mode = "new-name";
+          mode = "new-form";
+          formIdx = Math.max(0, fields.indexOf("name"));
           feedback = { text: error.message, level: "error" };
           items = load();
           render();
@@ -651,72 +824,110 @@ export async function pick(
         return render();
       }
 
-      if (mode !== "list") {
+      // The full-screen create form: every field shown at once with a focus
+      // ring. Tab/Shift-Tab (and ↑/↓) move between fields, Enter creates, Esc
+      // cancels (un-zooming the pane). Tab on the Dir field autocompletes.
+      if (mode === "new-form") {
         if (creating) return;
+        const field = fields[formIdx]!;
+        const moveField = (delta: number) => {
+          formIdx = cycleField(formIdx, fields.length, delta);
+          formCandidates = [];
+        };
         if (key === "\x1b") {
           mode = "list";
           newName = "";
           newTask = "";
           newDir = "";
           newHostIdx = 0;
+          formIdx = 0;
+          formCandidates = [];
+          feedback = null;
+          setForm(false); // un-zoom the sidebar pane
+        } else if (key === "\r" || key === "\n") {
+          if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
+            feedback = { text: "name must be alphanumeric with dashes/underscores", level: "error" };
+            formIdx = Math.max(0, fields.indexOf("name"));
+          } else {
+            feedback = null;
+            return submitCreate();
+          }
+        } else if (key === "\t") {
+          // Tab on the Dir field completes against the local filesystem; if it
+          // makes no progress (already complete, no matches) it falls through
+          // to moving focus, so Tab-Tab still advances.
+          if (field === "dir") {
+            const { value, candidates } = completeDir(newDir);
+            if (value !== newDir || candidates.length) {
+              newDir = value;
+              formCandidates = candidates;
+            } else {
+              moveField(1);
+            }
+          } else {
+            moveField(1);
+          }
+        } else if (key === "\x1b[Z") {
+          moveField(-1); // shift-tab
+        } else if (key === "\x1b[B") {
+          moveField(1); // ↓
+        } else if (key === "\x1b[A") {
+          moveField(-1); // ↑
+        } else if (field === "where" && key === "\x1b[C") {
+          newHostIdx = (newHostIdx + 1) % hostOptions.length;
+        } else if (field === "where" && key === "\x1b[D") {
+          newHostIdx = (newHostIdx - 1 + hostOptions.length) % hostOptions.length;
+        } else if (key === "\x7f" || key === "\b") {
+          if (field === "name") newName = newName.slice(0, -1);
+          else if (field === "task") newTask = newTask.slice(0, -1);
+          else if (field === "dir") {
+            newDir = newDir.slice(0, -1);
+            formCandidates = [];
+          }
+        } else if (key >= " " && !key.startsWith("\x1b")) {
+          if (field === "name") newName += key;
+          else if (field === "task") newTask += key;
+          else if (field === "dir") {
+            newDir += key;
+            formCandidates = [];
+          }
+          // "where" takes no text — it's arrow-navigated.
+        }
+        return render();
+      }
+
+      if (mode === "cd-dir") {
+        if (key === "\x1b") {
+          mode = "list";
           cdDir = "";
           cdTarget = null;
           feedback = null;
         } else if (key === "\r" || key === "\n") {
-          if (mode === "new-name") {
-            if (!/^[a-zA-Z0-9_-]+$/.test(newName)) {
-              feedback = { text: "name must be alphanumeric with dashes/underscores", level: "error" };
-            } else {
-              feedback = null;
-              mode = "new-task";
-            }
-          } else if (mode === "new-task") {
-            mode = "new-dir";
-            newDir = handlers.defaultDir?.(cursorName) ?? "";
-          } else if (mode === "cd-dir") {
-            const target = cdTarget;
-            const dir = cdDir.trim();
-            mode = "list";
-            cdDir = "";
-            cdTarget = null;
-            if (target && handlers.cd) {
-              feedback = { text: `moving ${target} to ${dir}…`, level: "info" };
-              Promise.resolve()
-                .then(() => handlers.cd!(target, dir))
-                .then(
-                  (message) => {
-                    feedback = asFeedback(message);
-                    items = load();
-                    if (!finished) render();
-                  },
-                  (error: Error) => {
-                    feedback = { text: error.message, level: "error" };
-                    if (!finished) render();
-                  },
-                );
-            }
-          } else if (mode === "new-dir") {
-            // Ask local-vs-remote only when there's somewhere remote to go.
-            if (hostOptions.length > 1) mode = "new-host";
-            else return submitCreate();
-          } else {
-            return submitCreate(); // new-host → spawn
+          const target = cdTarget;
+          const dir = cdDir.trim();
+          mode = "list";
+          cdDir = "";
+          cdTarget = null;
+          if (target && handlers.cd) {
+            feedback = { text: `moving ${target} to ${dir}…`, level: "info" };
+            Promise.resolve()
+              .then(() => handlers.cd!(target, dir))
+              .then(
+                (message) => {
+                  feedback = asFeedback(message);
+                  items = load();
+                  if (!finished) render();
+                },
+                (error: Error) => {
+                  feedback = { text: error.message, level: "error" };
+                  if (!finished) render();
+                },
+              );
           }
-        } else if (mode === "new-host" && (key === "\x1b[C" || key === "\x1b[B")) {
-          newHostIdx = (newHostIdx + 1) % hostOptions.length;
-        } else if (mode === "new-host" && (key === "\x1b[D" || key === "\x1b[A")) {
-          newHostIdx = (newHostIdx - 1 + hostOptions.length) % hostOptions.length;
         } else if (key === "\x7f" || key === "\b") {
-          if (mode === "new-name") newName = newName.slice(0, -1);
-          else if (mode === "new-task") newTask = newTask.slice(0, -1);
-          else if (mode === "cd-dir") cdDir = cdDir.slice(0, -1);
-          else if (mode === "new-dir") newDir = newDir.slice(0, -1);
+          cdDir = cdDir.slice(0, -1);
         } else if (key >= " " && !key.startsWith("\x1b")) {
-          if (mode === "new-name") newName += key;
-          else if (mode === "new-task") newTask += key;
-          else if (mode === "cd-dir") cdDir += key;
-          else if (mode === "new-dir") newDir += key;
-          // new-host takes no text — it's arrow-navigated.
+          cdDir += key;
         }
         return render();
       }
@@ -743,10 +954,15 @@ export async function pick(
         mode = "filter";
         feedback = null;
       } else if ((key === "\x0e" || key === "n") && handlers.create) {
-        mode = "new-name";
+        mode = "new-form";
         newName = "";
         newTask = "";
+        newDir = handlers.defaultDir?.(cursorName) ?? "";
+        newHostIdx = 0;
+        formIdx = 0;
+        formCandidates = [];
         feedback = null;
+        setForm(true); // zoom the sidebar pane to full screen
       } else if (key === "a") {
         showAll = !showAll;
         feedback = null;

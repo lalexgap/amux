@@ -328,6 +328,17 @@ export async function sidebarCommand(): Promise<void> {
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
     },
+    // The create form wants the whole screen, but the sidebar process only
+    // paints its own ~38-col pane. Zoom that pane (resize-pane -Z) while the
+    // form is up and un-zoom when it closes. Idempotent: we check the current
+    // zoom flag so a double open/close never leaves it inverted.
+    onForm: (active: boolean) => {
+      const pane = sidebarPaneId();
+      if (!pane) return;
+      const flag = tmux("display-message", "-p", "-t", pane, "#{window_zoomed_flag}");
+      const zoomed = flag.stdout.trim() === "1";
+      if (active !== zoomed) tmux("resize-pane", "-Z", "-t", pane);
+    },
     // Focus indicator: is the sidebar pane the active one, or has the user
     // locked into the agent pane? Read this pane's own pane_active flag.
     activity: () => {
