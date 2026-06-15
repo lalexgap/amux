@@ -82,10 +82,10 @@ export function createHub(): void {
   if (result.exitCode !== 0) throw new Error(`tmux new-session failed: ${result.stderr.trim()}`);
   ensureRightPane();
 
-  // Hub chrome: no status bar, and ctrl-q toggles between sidebar and agent
-  // pane. The binding lives in a hub-only key table, so the outer client
-  // intercepts ctrl-q before the nested agent session (whose own ctrl-q
-  // binding means detach) ever sees it.
+  // Hub chrome: no status bar, and ctrl-q returns focus to the sidebar (gets
+  // you out of being locked into an agent). The binding lives in a hub-only
+  // key table, so the outer client intercepts ctrl-q before the nested agent
+  // session (whose own ctrl-q binding means detach) ever sees it.
   tmux("set-option", "-t", hubTarget(), "status", "off");
   // The terminal tab title follows whichever agent the right pane shows
   // (showAgent updates the string); direct `am j` attaches get theirs from
@@ -100,7 +100,10 @@ export function createHub(): void {
 // Key tables are server-global; re-applied on every attach so lingering hubs
 // pick up binding changes without a recreate.
 function applyHubBindings(): void {
-  tmux("bind-key", "-T", "am-hub", "C-q", "select-pane", "-l");
+  // ctrl-q always moves to the sidebar (the left pane) rather than toggling
+  // (-l), so it only ever gets you OUT of an agent — a no-op when already on
+  // the sidebar, never a way to lock back in.
+  tmux("bind-key", "-T", "am-hub", "C-q", "select-pane", "-L");
   // URL clicks are handled OUTER-side: the right pane's visible text IS the
   // (possibly remote) agent screen, so the local am extracts the URL and
   // opens it on THIS machine — a remote session's am __click would run
