@@ -72,7 +72,10 @@ async function deliverReport(from: string, target: string, body: string): Promis
   const t = readAgent(target);
   if (!t || !hasSession(t.tmuxSession)) return;
   const att = attribute(from, target, body, "report");
-  if (!att.allowed) return; // rate limited — a loop guard tripped
+  if (!att.allowed) {
+    console.error(`am: report from ${from} to ${target} rate-limited (dropped)`);
+    return; // a loop guard tripped
+  }
   queueAppend(target, att.body);
   // Await so the verify-and-retry in deliverNext finishes before the hook exits.
   if (t.status === "idle" || t.status === "starting") await deliverNext(target);

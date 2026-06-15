@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   attribute,
+  bareName,
   commsFor,
   formatEnvelope,
   hasMessagedSince,
   isSelfSend,
   resolveSender,
   shouldReport,
+  splitAddr,
 } from "../src/comms";
 import { configFile } from "../src/paths";
 
@@ -34,6 +36,18 @@ describe("resolveSender", () => {
     delete process.env.AGENTMGR_AGENT;
     expect(resolveSender()).toBeUndefined();
     expect(resolveSender("  ")).toBeUndefined();
+  });
+});
+
+describe("splitAddr / bareName", () => {
+  test("parses host:name (canonical), bare names, and tolerates legacy name@host", () => {
+    expect(splitAddr("api")).toEqual({ name: "api" });
+    expect(splitAddr("server:api")).toEqual({ host: "server", name: "api" });
+    // legacy outbox form — must still de-qualify to the right name, not misroute
+    expect(splitAddr("api@server")).toEqual({ host: "server", name: "api" });
+    expect(bareName("server:api")).toBe("api");
+    expect(bareName("api@server")).toBe("api");
+    expect(bareName("api")).toBe("api");
   });
 });
 

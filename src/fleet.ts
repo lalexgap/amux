@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { agentRows, relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS, type AgentRow } from "./commands/ls";
 import { loadConfig } from "./config";
 import { sshAm, sshAmAsync, sshRun } from "./remote";
+import { splitAddr } from "./comms";
 import type { PickerItem } from "./picker";
 
 // The merged local+remote fleet. Remote rows come from `am ls --json
@@ -21,10 +22,10 @@ export function fleetKey(row: { host?: string; name: string }): string {
   return row.host ? `${row.host}:${row.name}` : row.name;
 }
 
+// Delegates to the canonical address parser (colon-primary, tolerant of the
+// legacy name@host form) so reply routing and attribution agree everywhere.
 export function splitFleetKey(key: string): { host?: string; name: string } {
-  const idx = key.indexOf(":");
-  if (idx === -1) return { name: key };
-  return { host: key.slice(0, idx), name: key.slice(idx + 1) };
+  return splitAddr(key);
 }
 
 // Hosts can be long ("home.alexgap.ca"); badges and columns use the first

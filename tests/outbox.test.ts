@@ -12,7 +12,7 @@ import {
   takeBouncesFrom,
   type OutboxEntry,
 } from "../src/outbox";
-import { formatEnvelope } from "../src/comms";
+import { formatEnvelope, splitAddr } from "../src/comms";
 
 let home: string;
 
@@ -91,13 +91,15 @@ describe("takeBouncesFrom", () => {
 });
 
 describe("collectedSender (attribution formatting)", () => {
-  test("qualifies the sender by short host so the recipient sees the origin", () => {
-    expect(collectedSender("web", "server", "box")).toBe("web@server");
-    expect(collectedSender("web", "home.alexgap.ca", "box")).toBe("web@home"); // short host
+  test("qualifies the sender as host:name so the reply is routable", () => {
+    expect(collectedSender("web", "server", "box")).toBe("server:web");
+    expect(collectedSender("web", "home.alexgap.ca", "box")).toBe("home:web"); // short host
     expect(collectedSender(undefined, "server", "box")).toBe("server"); // anonymous → host only
-    expect(collectedSender("web", "", "box")).toBe("web@box"); // fall back to ssh alias
+    expect(collectedSender("web", "", "box")).toBe("box:web"); // fall back to ssh alias
 
-    // …and that label flows straight into the envelope the recipient reads.
-    expect(formatEnvelope(collectedSender("web", "server", "box"), "ping")).toBe("[am · from web@server] ping");
+    // The label flows into the envelope the recipient reads…
+    expect(formatEnvelope(collectedSender("web", "server", "box"), "ping")).toBe("[am · from server:web] ping");
+    // …and pasting it back parses to the right host+name (the bug this fixes).
+    expect(splitAddr(collectedSender("web", "server", "box"))).toEqual({ host: "server", name: "web" });
   });
 });

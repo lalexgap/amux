@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { commsLogFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
 
@@ -32,6 +32,22 @@ export function isSelfSend(from: string, target: string): boolean {
   return !from.includes(":") && from === target;
 }
 
+// Canonical address parser. The fleet separator is ":" (host:name). We also
+// tolerate the legacy "name@host" form the outbox relay used to stamp, so a
+// reply pasting it still de-qualifies to the right bare name instead of
+// misrouting. This is THE one parser — splitFleetKey delegates to it.
+export function splitAddr(key: string): { host?: string; name: string } {
+  const colon = key.indexOf(":");
+  if (colon !== -1) return { host: key.slice(0, colon), name: key.slice(colon + 1) };
+  const at = key.indexOf("@");
+  if (at !== -1) return { name: key.slice(0, at), host: key.slice(at + 1) };
+  return { name: key };
+}
+
+export function bareName(key: string): string {
+  return splitAddr(key).name;
+}
+
 // The prefix recipients (LLMs) see. Terse on purpose; the primer teaches what
 // it means and how to reply. Host-qualified senders keep their qualifier so the
 // reply can be addressed across machines.
@@ -39,18 +55,50 @@ export function formatEnvelope(from: string, body: string): string {
   return `[am · from ${from}] ${body}`;
 }
 
+// Parse JSONL skipping torn/garbage lines, so one bad write can't brick the
+// whole read path (rate limiter, backstop, `am comms`, outbox).
+export function parseJsonl<T>(text: string): T[] {
+  const out: T[] = [];
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      out.push(JSON.parse(line) as T);
+    } catch {
+      // skip a torn line rather than throwing out every entry
+    }
+  }
+  return out;
+}
+
 function readLog(): CommsEntry[] {
   const file = commsLogFile();
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l) as CommsEntry);
+  return parseJsonl<CommsEntry>(readFileSync(file, "utf8"));
+}
+
+// The ledger is read in full on every send (rate-limit window) and Stop hook, so
+// bound its growth: when it gets large, keep only the most recent lines.
+const LEDGER_MAX_LINES = 4000;
+const LEDGER_TRIM_BYTES = 1_000_000;
+
+function trimLedgerIfLarge(): void {
+  const file = commsLogFile();
+  try {
+    if (statSync(file).size < LEDGER_TRIM_BYTES) return;
+  } catch {
+    return;
+  }
+  const lines = readFileSync(file, "utf8").split("\n").filter((l) => l.trim() !== "");
+  if (lines.length <= LEDGER_MAX_LINES) return;
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, lines.slice(-LEDGER_MAX_LINES).join("\n") + "\n");
+  renameSync(tmp, file);
 }
 
 export function recordComms(entry: CommsEntry): void {
   ensureDirs();
   appendFileSync(commsLogFile(), JSON.stringify(entry) + "\n");
+  trimLedgerIfLarge();
 }
 
 // How many messages this sender has sent this target within the window.
@@ -117,10 +165,7 @@ export function shouldReport(opts: {
 
 // Recent ledger entries touching `name` in either direction, newest last.
 export function commsFor(name: string, limit = 20): CommsEntry[] {
-  const base = name.includes(":") ? name.slice(name.indexOf(":") + 1) : name;
-  const entries = readLog().filter((e) => {
-    const fromBase = e.from.includes(":") ? e.from.slice(e.from.indexOf(":") + 1) : e.from;
-    return fromBase === base || e.to === base;
-  });
+  const base = bareName(name);
+  const entries = readLog().filter((e) => bareName(e.from) === base || bareName(e.to) === base);
   return entries.slice(-limit);
 }

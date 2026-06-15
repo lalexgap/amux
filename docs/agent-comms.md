@@ -232,7 +232,8 @@ and never fleet-forwarded; `am outbox [--clear]` is the human-facing view.)
 Lower the interval for snappier delivery at the cost of one ssh per remote per
 tick; `0` disables collection. Each is injected through the
 normal `attribute()` path, the sender **qualified by host** so the recipient
-sees `[am · from <name>@<host>] …`, then delivered on idle (`deliverNext`).
+sees `[am · from <host>:<name>] …` (the canonical, reply-able form), then
+delivered on idle (`deliverNext`).
 
 **Safety.** Attribution and the per-pair rate limiter run at **injection** time,
 so a cross-machine report loop trips the same guard as a local one. TTL is never

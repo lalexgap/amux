@@ -23,7 +23,11 @@ async function injectCollected(entry: OutboxEntry, host: string): Promise<void> 
   if (!target) return; // the name stopped being local since we advertised it
   const sender = collectedSender(entry.from, entry.fromHost, host);
   const att = attribute(sender, entry.to, entry.body, "send");
-  if (!att.allowed) return; // cross-machine loop guard tripped
+  if (!att.allowed) {
+    // cross-machine loop guard tripped — don't drop silently
+    console.error(`outbox: rate-limited collected message from ${sender} to ${entry.to} (dropped)`);
+    return;
+  }
   queueAppend(entry.to, att.body);
   if (target.status === "idle" || target.status === "starting") {
     try {

@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { outboxBouncesFile, outboxDir, outboxFile } from "./paths";
 import { loadConfig } from "./config";
+import { parseJsonl } from "./comms";
 
 // Store-and-forward messaging for the reverse direction. A send whose target
 // can't be reached from here (no local agent, no reachable remote) lands in the
@@ -35,22 +36,21 @@ export function isExpired(entry: OutboxEntry, now = Date.now()): boolean {
   return Date.parse(entry.queuedAt) + entry.ttlMs <= now;
 }
 
-// The sender label a collected message is attributed with: "<name>@<host>" so
-// the recipient knows it crossed machines (and can reply). Falls back to the
-// ssh-alias host when the entry carries no fromHost, and to host-only when the
-// send wasn't from inside an agent. Host is shortened to its first dns label.
+// The sender label a collected message is attributed with: "<host>:<name>" —
+// the canonical fleet address form, so the recipient can reply by pasting it
+// straight into `am send`. (Previously "<name>@<host>", which the reply parser
+// couldn't route — see docs/messaging-redesign.md.) Falls back to the ssh-alias
+// host when the entry carries no fromHost, and to host-only when the send wasn't
+// from inside an agent. Host is shortened to its first dns label.
 export function collectedSender(from: string | undefined, fromHost: string, fallbackHost: string): string {
   const raw = fromHost || fallbackHost;
   const origin = raw.split(".")[0] || raw;
-  return from ? `${from}@${origin}` : origin;
+  return from ? `${origin}:${from}` : origin;
 }
 
 function readEntries(file: string): OutboxEntry[] {
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l) as OutboxEntry);
+  return parseJsonl<OutboxEntry>(readFileSync(file, "utf8"));
 }
 
 export interface AppendInput {
@@ -84,16 +84,17 @@ function recordBounces(expired: OutboxEntry[]): void {
   const existing = readBounces();
   const all = [...existing, ...expired.map((e) => ({ ...e, expiredAt: at }))];
   const kept = all.slice(-BOUNCE_CAP);
-  writeFileSync(outboxBouncesFile(), kept.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  // tmp+rename so a crash mid-write can't corrupt the bounce log.
+  const file = outboxBouncesFile();
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, kept.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  renameSync(tmp, file);
 }
 
 export function readBounces(): BouncedEntry[] {
   const file = outboxBouncesFile();
   if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l) as BouncedEntry);
+  return parseJsonl<BouncedEntry>(readFileSync(file, "utf8"));
 }
 
 // Atomically return-and-remove all live entries addressed to `names`. Expired

@@ -3,7 +3,7 @@ import { listAgents, readAgent, resolveAgent } from "../state";
 import { queueAppend, queueDepth } from "../queue";
 import { hasSession, sendEscape, sendText } from "../tmux";
 import { deliverNext, enterDelayMs } from "../deliver";
-import { attribute, resolveSender } from "../comms";
+import { attribute, bareName, resolveSender } from "../comms";
 import { loadConfig } from "../config";
 import { outboxAppend, takeBouncesFrom } from "../outbox";
 
@@ -32,7 +32,7 @@ function localMatch(prefix: string): string | null {
 // undelivered, so a bounce is never silent.
 function outboxFallback(prefix: string, message: string, opts: { from?: string }): void {
   const from = resolveSender(opts.from);
-  const to = prefix.includes(":") ? prefix.slice(prefix.indexOf(":") + 1) : prefix;
+  const to = bareName(prefix);
   outboxAppend({ to, from, fromHost: hostname(), body: message });
   console.log(`queued in outbox for "${to}" — delivered when a collector picks it up`);
   for (const b of from ? takeBouncesFrom(from) : []) {

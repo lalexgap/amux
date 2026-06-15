@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { hostname } from "node:os";
 import { agentProvider, listAgents, readAgent, resolveAgent } from "./state";
 import { queueDepth } from "./queue";
 import { pick, type PickerHandlers } from "./picker";
@@ -187,8 +188,10 @@ function injectSender(command: string | undefined, argv: string[]): string[] {
   if (argv.includes("--from")) return argv;
   const sender = resolveSender();
   if (!sender) return argv;
-  const alias = loadConfig().hostAlias;
-  return [...argv, "--from", alias ? `${alias}:${sender}` : sender];
+  // Always host-qualify so the recipient sees a reply-able `host:name` (matching
+  // the outbox path). hostAlias when set, else this machine's short hostname.
+  const alias = loadConfig().hostAlias || shortHost(hostname());
+  return [...argv, "--from", `${alias}:${sender}`];
 }
 
 function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv: string[]): void {

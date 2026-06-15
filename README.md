@@ -132,7 +132,8 @@ the structure that makes a conversation work:
   The laptop's daemon sweeps each configured remote's outbox every
   `outboxPollSeconds` (default 5s; set `0` to disable), pulls anything addressed
   to its local agents, and delivers it attributed by origin (`[am · from
-  web@server] …`). Entries expire after ~48h (`outboxTtlHours`) and a bounce is
+  server:web] …`, the same `host:name` you reply with). Entries expire after
+  ~48h (`outboxTtlHours`) and a bounce is
   surfaced back to the sender — never a silent drop. (Both machines need this
   version of `am` for the round trip.)
 

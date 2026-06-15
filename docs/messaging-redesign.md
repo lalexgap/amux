@@ -62,9 +62,15 @@ machines — with no silent loss and low latency. Draft for Alex's review.
 
 ## The plan
 
-### Phase 0 — Correctness quick wins (fixes the live bug; stops silent drops)
+### Phase 0 — Correctness quick wins (fixes the live bug; stops silent drops) ✅ SHIPPED
 
-Small, localized, high-value. **Ship first.**
+Small, localized, high-value. Implemented: `collectedSender` flips to `host:name`;
+`splitFleetKey`/`splitAddr` is one tolerant parser (handles legacy `name@host`);
+`outboxFallback`/`commsFor` de-qualify via it; the forward path always host-qualifies;
+primer rewritten to "paste exactly what follows `from`"; collector + report-backstop
+rate-limit drops are logged; JSONL readers skip torn lines; comms ledger is size-capped.
+(Phase 0's deeper addressing items — `AGENTMGR_AGENT_ADDR`, `hostAlias` config default —
+move into the reliability PR.)
 
 1. **Unify addressing on `host:name`** (C1, C2, C3):
    - Flip `collectedSender`: `${from}@${origin}` → `${origin}:${from}` (`outbox.ts`). *This
