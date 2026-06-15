@@ -50,9 +50,13 @@ export interface PickerHandlers {
   remove?: (name: string) => Feedback;
   // Live pane content for the highlighted agent, shown in the right pane.
   preview?: (name: string) => string[];
-  // Create a new agent; resolves to its name, which the picker then jumps to
-  // (or selects, in persistent mode).
-  create?: (name: string, task: string | undefined, dir: string | undefined) => Promise<string>;
+  // Create a new agent; resolves to its key (name locally, host:name remote),
+  // which the picker then jumps to (or selects, in persistent mode). host is
+  // undefined for local, or a configured remote alias chosen in the flow.
+  create?: (name: string, task: string | undefined, dir: string | undefined, host: string | undefined) => Promise<string>;
+  // Configured remote hosts. When non-empty, the create flow adds a
+  // "where" step (local vs a remote) after the dir prompt.
+  remotes?: string[];
   // Prefill for the create flow's directory prompt, given the currently
   // highlighted agent (related work usually lives in the same project).
   defaultDir?: (highlighted: string | null) => string;
@@ -260,7 +264,7 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "cd-dir" | "edit";
+type Mode = "list" | "filter" | "new-name" | "new-task" | "new-dir" | "new-host" | "cd-dir" | "edit";
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
   return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
@@ -300,6 +304,10 @@ export async function pick(
   let newName = "";
   let newTask = "";
   let newDir = "";
+  // Where to spawn: index into hostOptions ("local" + configured remotes).
+  // The "where" step is only shown when at least one remote is configured.
+  const hostOptions = ["local", ...(handlers.remotes ?? [])];
+  let newHostIdx = 0;
   let cdDir = "";
   let cdTarget: string | null = null;
   let creating = false;
@@ -357,6 +365,8 @@ export async function pick(
           ? { text: `task (optional): ${newTask}▌` }
           : mode === "new-dir"
             ? { text: `dir: ${newDir}▌` }
+            : mode === "new-host"
+              ? { text: `where: ${hostOptions.map((h, i) => (i === newHostIdx ? `[${h}]` : ` ${h} `)).join(" ")}  ·  ←/→ enter` }
             : mode === "cd-dir"
               ? { text: `cd to: ${cdDir}▌` }
             : mode === "filter"
@@ -506,7 +516,8 @@ export async function pick(
       if (creating || !handlers.create) return;
       creating = true;
       render();
-      handlers.create(newName, newTask || undefined, newDir.trim() || undefined).then(
+      const host = hostOptions[newHostIdx] === "local" ? undefined : hostOptions[newHostIdx];
+      handlers.create(newName, newTask || undefined, newDir.trim() || undefined, host).then(
         (created) => {
           if (!handlers.select) return finish(created);
           creating = false;
@@ -514,6 +525,7 @@ export async function pick(
           newName = "";
           newTask = "";
           newDir = "";
+          newHostIdx = 0;
           feedback = asFeedback(handlers.select(created));
           items = load();
           render();
@@ -646,6 +658,7 @@ export async function pick(
           newName = "";
           newTask = "";
           newDir = "";
+          newHostIdx = 0;
           cdDir = "";
           cdTarget = null;
           feedback = null;
@@ -682,19 +695,28 @@ export async function pick(
                   },
                 );
             }
+          } else if (mode === "new-dir") {
+            // Ask local-vs-remote only when there's somewhere remote to go.
+            if (hostOptions.length > 1) mode = "new-host";
+            else return submitCreate();
           } else {
-            return submitCreate(); // renders itself
+            return submitCreate(); // new-host → spawn
           }
+        } else if (mode === "new-host" && (key === "\x1b[C" || key === "\x1b[B")) {
+          newHostIdx = (newHostIdx + 1) % hostOptions.length;
+        } else if (mode === "new-host" && (key === "\x1b[D" || key === "\x1b[A")) {
+          newHostIdx = (newHostIdx - 1 + hostOptions.length) % hostOptions.length;
         } else if (key === "\x7f" || key === "\b") {
           if (mode === "new-name") newName = newName.slice(0, -1);
           else if (mode === "new-task") newTask = newTask.slice(0, -1);
           else if (mode === "cd-dir") cdDir = cdDir.slice(0, -1);
-          else newDir = newDir.slice(0, -1);
+          else if (mode === "new-dir") newDir = newDir.slice(0, -1);
         } else if (key >= " " && !key.startsWith("\x1b")) {
           if (mode === "new-name") newName += key;
           else if (mode === "new-task") newTask += key;
           else if (mode === "cd-dir") cdDir += key;
-          else newDir += key;
+          else if (mode === "new-dir") newDir += key;
+          // new-host takes no text — it's arrow-navigated.
         }
         return render();
       }

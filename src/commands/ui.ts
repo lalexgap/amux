@@ -4,6 +4,7 @@ import { cliEntrypoint } from "../settings";
 import { expandHome } from "../paths";
 import { cachedRemoteRow, fleetPickerItems, shortHost, splitFleetKey, toggleGroupMode } from "../fleet";
 import { sshAm, sshRun } from "../remote";
+import { loadConfig } from "../config";
 import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./fleetActions";
 import { pick, type Feedback, type PickerHandlers } from "../picker";
 import { displayStatus, relativeTime, shortenHome, STATUS_ICONS } from "./ls";
@@ -291,7 +292,18 @@ export async function sidebarCommand(): Promise<void> {
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
     },
-    create: async (name: string, task: string | undefined, dir: string | undefined) => {
+    remotes: loadConfig().remotes ?? [],
+    create: async (name: string, task: string | undefined, dir: string | undefined, host: string | undefined) => {
+      if (host) {
+        // Spawn on the remote via its own am; dir (if given) is a path on that
+        // host, so it's passed through untouched (no local ~ expansion).
+        const args = ["new", name, "--no-jump"];
+        if (task) args.push("-m", task);
+        if (dir) args.push("--dir", dir);
+        const res = sshAm(host, args);
+        if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `remote new on ${host} failed`);
+        return `${host}:${name}`;
+      }
       await newCommand({ name, message: task, dir: dir ? expandHome(dir) : undefined, jump: false, quiet: true });
       return name;
     },
