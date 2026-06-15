@@ -1,4 +1,4 @@
-import { closeSync, openSync, rmSync, statSync } from "node:fs";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentProvider, readAgent, type AgentState } from "./state";
 import { queuePeek, queuePop } from "./queue";
@@ -9,37 +9,51 @@ import { queueDir } from "./paths";
 // Per-agent delivery lock. deliverNext can be invoked concurrently from three
 // places — the Stop hook's detached process, the daemon's /event handler, and
 // the reconcile loop — so an in-process flag isn't enough; without this two
-// callers can peek the same queue head and type it into the pane twice. An
-// O_EXCL lockfile serializes across processes; a stale lock (holder crashed)
-// is reclaimed after a timeout.
+// callers can peek the same queue head and type it into the pane twice.
+//
+// We write a unique token and read it back to confirm ownership. The exclusive
+// create (flag "wx") is the fast path; a STALE lock (holder crashed) is stolen
+// by overwriting then verifying the read-back is still our token. The read-back
+// resolves the steal race — if two stealers race, last-writer-wins and only one
+// sees its own token — so a fresh lock is never clobbered into a double-hold.
+// [hardened per review M2: replaces the rm-then-recreate TOCTOU]
 const LOCK_STALE_MS = 30_000;
 
 function lockPath(name: string): string {
   return join(queueDir(), `${name}.deliver.lock`);
 }
 
-function acquireDeliverLock(name: string): boolean {
+export function acquireDeliverLock(name: string): boolean {
   const path = lockPath(name);
+  const token = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   try {
-    closeSync(openSync(path, "wx")); // O_EXCL — fails if it already exists
-    return true;
+    writeFileSync(path, token, { flag: "wx" }); // exclusive create
   } catch {
+    // exists — only steal if stale
+    let mtimeMs: number;
     try {
-      if (Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
-        rmSync(path, { force: true });
-        closeSync(openSync(path, "wx"));
-        return true;
-      }
+      mtimeMs = statSync(path).mtimeMs;
     } catch {
-      // lost the reclaim race — someone else holds it
+      return false; // vanished under us — let another caller take it next time
     }
+    if (Date.now() - mtimeMs <= LOCK_STALE_MS) return false;
+    writeFileSync(path, token); // overwrite the stale lock (last writer wins)
+  }
+  // Confirm we actually own it — a racing stealer may have overwritten us.
+  try {
+    return readFileSync(path, "utf8") === token;
+  } catch {
     return false;
   }
 }
 
-function releaseDeliverLock(name: string): void {
+export function releaseDeliverLock(name: string): void {
   rmSync(lockPath(name), { force: true });
 }
+
+// Exposed for tests.
+export const __lockStaleMs = LOCK_STALE_MS;
+export { lockPath as __lockPath };
 
 export function enterDelayMs(agent: AgentState, message?: string): number | undefined {
   // Codex always drops an Enter that lands in the same key batch as the

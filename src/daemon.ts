@@ -27,16 +27,22 @@ export function nextPollMs(current: number, hotMs: number, maxMs: number, collec
 // per-pair guard as a local send. The sender is qualified by host so the
 // recipient sees "[am · from <host>:<name>] …" and can reply across machines.
 // Dedup by msgId makes redelivery (the price of at-least-once) invisible.
-async function injectCollected(entry: OutboxEntry, host: string): Promise<void> {
+//
+// Returns whether this entry is DONE (safe to ack). A rate-limited entry is NOT
+// done: it returns false so the caller withholds the ack, and the claim is
+// reclaimed and retried on a later sweep once the per-pair window clears —
+// rather than being dropped *and* acked (= lost). msgId dedup keeps the retry
+// from double-delivering the entries that did get through. [fixes review M1]
+async function injectCollected(entry: OutboxEntry, host: string): Promise<boolean> {
   const target = readAgent(entry.to);
-  if (!target) return; // the name stopped being local since we advertised it
-  if (entry.msgId && seenRecently(entry.msgId)) return; // already delivered — dedup
+  if (!target) return true; // name no longer local — nothing we can do here; let it go
+  if (entry.msgId && seenRecently(entry.msgId)) return true; // already delivered — dedup
   const sender = collectedSender(entry.from, entry.fromHost, host);
   const att = attribute(sender, entry.to, entry.body, "send", entry.msgId);
   if (!att.allowed) {
-    // cross-machine loop guard tripped — don't drop silently
-    console.error(`outbox: rate-limited collected message from ${sender} to ${entry.to} (dropped)`);
-    return;
+    // loop guard tripped — defer (don't ack) so it's retried, not lost
+    console.error(`outbox: rate-limited collected message from ${sender} to ${entry.to} (deferred for retry)`);
+    return false;
   }
   queueAppend(entry.to, att.body);
   if (target.status === "idle" || target.status === "starting") {
@@ -46,6 +52,7 @@ async function injectCollected(entry: OutboxEntry, host: string): Promise<void> 
       console.error(`outbox delivery to ${entry.to} failed:`, error);
     }
   }
+  return true;
 }
 
 // Sweep one remote: claim its mail for our names, inject locally, then ack so
@@ -62,10 +69,14 @@ async function collectFromHost(host: string, localNames: string[]): Promise<numb
     } catch {
       return 0; // not JSON — ignore this host this sweep
     }
-    for (const entry of entries) await injectCollected(entry, host);
-    // Ack only after every entry is durably queued locally; if this never lands
-    // (we crash here), the remote reclaims and redelivers → dedup absorbs it.
-    if (entries.length > 0) await sshAmAsync(host, ["__outbox-ack", cid], { timeoutMs: 8000 });
+    let ackable = true;
+    for (const entry of entries) {
+      if (!(await injectCollected(entry, host))) ackable = false;
+    }
+    // Ack only after every entry is durably queued locally AND none were
+    // deferred (rate-limited). If we crash here, or withhold the ack, the remote
+    // reclaims and redelivers → dedup absorbs what already landed, retries the rest.
+    if (entries.length > 0 && ackable) await sshAmAsync(host, ["__outbox-ack", cid], { timeoutMs: 8000 });
     return entries.length;
   }
   // Old remote without claim/ack → legacy take (lossy, as before).

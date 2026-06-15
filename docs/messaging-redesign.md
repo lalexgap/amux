@@ -88,6 +88,11 @@ move into the reliability PR.)
 3. **Robust readers** (R6): wrap per-line `JSON.parse` with skip-on-error; write the
    bounce log via tmp+rename; cap/rotate the comms ledger.
 
+> Review follow-ups (PR #1): **M1** — collected mail that trips the rate limiter
+> is now *deferred* (ack withheld → reclaimed & retried) instead of dropped+acked
+> (= lost). **M2** — the delivery lock's stale-reclaim TOCTOU is fixed with a
+> write-token + read-back ownership check instead of rm-then-recreate.
+
 ### Phase 1 — Reliability: at-least-once + dedup ✅ SHIPPED (this PR)
 
 Convert "at-most-once with a silent hole" → "at-least-once with dedup."
