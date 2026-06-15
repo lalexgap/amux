@@ -202,6 +202,7 @@ export function fleetPickerItems(): PickerItem[] {
         `provider ${r.provider}`,
         `dir      ${shortenHome(r.dir)}`,
         ...(r.worktreeBranch ? [`branch   ${r.worktreeBranch}`] : []),
+        ...(r.spawnedBy ? [`parent   ${r.spawnedBy}`] : []),
         ...(r.reportTo ? [`reports  → ${r.reportTo}`] : []),
         ...(r.task ? [`task     ${r.task}`] : []),
         `updated  ${relativeTime(r.updatedAt)}`,

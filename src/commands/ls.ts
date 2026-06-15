@@ -204,6 +204,9 @@ export interface AgentRow {
   worktreeBranch?: string;
   createdAt?: string;
   reportTo?: string;
+  // The agent that spawned this one (AGENTMGR_AGENT at `am new`). Surfaced as
+  // the "parent" line in the sidebar; absent for human-spawned agents.
+  spawnedBy?: string;
   // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
   statusDetail?: string;
   repoRoot?: string;
