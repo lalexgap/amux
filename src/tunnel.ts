@@ -25,10 +25,17 @@ export interface TunnelOpts {
 // reachable only by the server itself, never exposed to its LAN. ExitOnForward
 // Failure so a port clash fails fast (we reconnect), and keepalives so a dead
 // link is detected promptly rather than hanging.
+//
+// ControlMaster=no + ControlPath=none force a DEDICATED connection: a user
+// ~/.ssh/config with `ControlMaster auto` would otherwise multiplex this onto a
+// shared master, and a multiplexed `-N` session exits immediately (the master
+// owns the connection) — so the tunnel must never share.
 export function reverseTunnelArgs(server: string, port: number, sshPort: number): string[] {
   return [
     "ssh",
     "-N", // no remote command — just the forward
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
     "-o", "ExitOnForwardFailure=yes",
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",

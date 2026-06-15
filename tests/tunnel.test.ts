@@ -11,6 +11,9 @@ describe("reverseTunnelArgs", () => {
     expect(argv).toContain("localhost:2222:localhost:22");
     expect(argv).toContain("ExitOnForwardFailure=yes");
     expect(argv).toContain("ServerAliveInterval=15");
+    // dedicated connection — never multiplex onto a user ControlMaster
+    expect(argv).toContain("ControlMaster=no");
+    expect(argv).toContain("ControlPath=none");
     expect(argv.at(-1)).toBe("server"); // host is last
   });
 
