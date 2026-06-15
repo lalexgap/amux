@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hookEffects } from "../src/commands/hook";
+import { buildInboxOutput, formatInbox, hookEffects } from "../src/commands/hook";
 
 describe("hookEffects", () => {
   test("maps lifecycle events to statuses", () => {
@@ -45,5 +45,23 @@ describe("hookEffects", () => {
 
   test("unknown event throws", () => {
     expect(() => hookEffects("nope", {})).toThrow(/unknown hook event/);
+  });
+});
+
+describe("inbox surfacing (UserPromptSubmit)", () => {
+  test("formatInbox singular vs plural, includes the messages", () => {
+    const one = formatInbox(["[am · from api] ping"]);
+    expect(one).toContain("1 message from another agent");
+    expect(one).toContain("[am · from api] ping");
+    const two = formatInbox(["[am · from api] a", "[am · from lead] b"]);
+    expect(two).toContain("2 messages from other agents");
+    expect(two).toContain("[am · from lead] b");
+  });
+
+  test("buildInboxOutput: null when empty, UserPromptSubmit additionalContext otherwise", () => {
+    expect(buildInboxOutput([])).toBeNull();
+    const out = JSON.parse(buildInboxOutput(["[am · from api] hi"])!);
+    expect(out.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(out.hookSpecificOutput.additionalContext).toContain("[am · from api] hi");
   });
 });

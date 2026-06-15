@@ -1,6 +1,6 @@
 import { readAgent, writeAgent, type AgentStatus } from "../state";
-import { queueAppend, queueDepth } from "../queue";
-import { deliverNext, spawnDeliver } from "../deliver";
+import { queueAppend, queueDepth, queuePop } from "../queue";
+import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
 import { loadConfig, shouldNotifyIdle } from "../config";
 import { notify } from "../notify";
@@ -81,6 +81,43 @@ async function deliverReport(from: string, target: string, body: string): Promis
   if (t.status === "idle" || t.status === "starting") await deliverNext(target);
 }
 
+// The context block shown to the agent for its pending peer messages. Pure.
+export function formatInbox(messages: string[]): string {
+  const n = messages.length;
+  const header =
+    n === 1
+      ? "You have 1 message from another agent (it arrived while you were busy):"
+      : `You have ${n} messages from other agents (they arrived while you were busy):`;
+  return `[am inbox] ${header}\n\n${messages.join("\n")}\n\nAddress or act on these as appropriate, then continue with the prompt below.`;
+}
+
+// The JSON a UserPromptSubmit hook emits to inject context, or null if there's
+// nothing to surface. Pure, for testing.
+export function buildInboxOutput(messages: string[]): string | null {
+  if (messages.length === 0) return null;
+  return JSON.stringify({
+    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatInbox(messages) },
+  });
+}
+
+// On every prompt, drain this agent's queued peer messages and surface them as
+// context for the turn — so it reads its inbox automatically, no idle-wait, no
+// "check your messages" nudge. Drains under the delivery lock so it never races
+// the idle-drain (deliverNext): atomic + lock-guarded means each message is
+// consumed exactly once whether it's surfaced here or typed in on idle.
+function surfaceInbox(name: string): void {
+  if (!acquireDeliverLock(name)) return; // deliverNext is mid-delivery — it'll handle them
+  try {
+    const pending: string[] = [];
+    let m: string | null;
+    while ((m = queuePop(name)) !== null) pending.push(m);
+    const out = buildInboxOutput(pending);
+    if (out) process.stdout.write(out);
+  } finally {
+    releaseDeliverLock(name);
+  }
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const name = process.env.AGENTMGR_AGENT;
   if (!name) return; // not a managed session
@@ -104,6 +141,10 @@ export async function hookCommand(event: string): Promise<void> {
   }
   if (event === "stop" || event === "session-end") agent.workingSince = undefined;
   writeAgent(agent);
+
+  // Surface any queued peer messages into this turn's context so the agent reads
+  // them automatically (UserPromptSubmit stdout is injected as context).
+  if (event === "user-prompt-submit") surfaceInbox(name);
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
   let pane: string[] | null = null;
