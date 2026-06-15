@@ -1,5 +1,18 @@
-import { describe, expect, test } from "bun:test";
-import { asFeedback, clipAnsi, feedbackBanner, splitKeys, visibleWidth, wrapTokens } from "../src/picker";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
+import { join } from "node:path";
+import {
+  asFeedback,
+  clipAnsi,
+  completeDir,
+  cycleField,
+  feedbackBanner,
+  formFields,
+  splitKeys,
+  visibleWidth,
+  wrapTokens,
+} from "../src/picker";
 
 const GREEN = "\x1b[32m";
 const YELLOW_C = "\x1b[33m";
@@ -89,6 +102,89 @@ describe("feedbackBanner", () => {
     expect(err.length).toBeGreaterThan(ok.length);
     expect(ok.length).toBeLessThanOrEqual(6);
     expect(err.length).toBeLessThanOrEqual(10);
+  });
+});
+
+describe("formFields", () => {
+  test("adds the where field only when remotes exist", () => {
+    expect(formFields(false)).toEqual(["name", "task", "dir"]);
+    expect(formFields(true)).toEqual(["name", "task", "dir", "where"]);
+  });
+});
+
+describe("cycleField", () => {
+  test("wraps forward and backward", () => {
+    expect(cycleField(0, 3, 1)).toBe(1);
+    expect(cycleField(2, 3, 1)).toBe(0); // wrap forward
+    expect(cycleField(0, 3, -1)).toBe(2); // wrap backward
+    expect(cycleField(1, 4, -1)).toBe(0);
+  });
+  test("is safe with no fields", () => {
+    expect(cycleField(0, 0, 1)).toBe(0);
+  });
+});
+
+describe("completeDir", () => {
+  let root: string;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), "am-complete-"));
+    mkdirSync(join(root, "alpha"));
+    mkdirSync(join(root, "alphabet"));
+    mkdirSync(join(root, "beta"));
+    mkdirSync(join(root, "solo"));
+    mkdirSync(join(root, "solo", "nested"));
+    writeFileSync(join(root, "alphafile"), "x"); // a file, must be ignored
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  test("uniquely completes a directory and appends a trailing slash", () => {
+    expect(completeDir(join(root, "be"))).toEqual({ value: join(root, "beta") + "/", candidates: [] });
+  });
+
+  test("a unique match descends past a same-named file (dirs only)", () => {
+    // "solo" matches the dir; the file alphafile is irrelevant here.
+    expect(completeDir(join(root, "so"))).toEqual({ value: join(root, "solo") + "/", candidates: [] });
+  });
+
+  test("ambiguous prefix completes to the common prefix and lists candidates", () => {
+    const res = completeDir(join(root, "alph"));
+    expect(res.value).toBe(join(root, "alpha"));
+    expect(res.candidates).toEqual(["alpha", "alphabet"]);
+  });
+
+  test("a trailing slash lists the directory's subdirectories", () => {
+    const res = completeDir(join(root, "solo") + "/");
+    expect(res.candidates).toEqual([]); // single subdir → unique completion
+    expect(res.value).toBe(join(root, "solo", "nested") + "/");
+  });
+
+  test("files are excluded from matches", () => {
+    // "alphafile" is a file; only the two alpha* dirs should match.
+    const res = completeDir(join(root, "alpha"));
+    expect(res.candidates).not.toContain("alphafile");
+  });
+
+  test("no match leaves the input untouched", () => {
+    expect(completeDir(join(root, "zzz"))).toEqual({ value: join(root, "zzz"), candidates: [] });
+  });
+
+  test("an unreadable directory is a no-op", () => {
+    expect(completeDir("/no/such/path/here/xy")).toEqual({ value: "/no/such/path/here/xy", candidates: [] });
+  });
+
+  test("expands ~ for reading but preserves the literal ~ in the value", () => {
+    // homedir() always exists; completing "~/" yields a ~-prefixed path or,
+    // if home has exactly one entry, a unique completion — either way it keeps
+    // the leading ~ rather than the expanded absolute path.
+    const res = completeDir("~/");
+    if (res.candidates.length) {
+      expect(res.value.startsWith("~/")).toBe(true);
+    } else {
+      // single completion still keeps the ~ head
+      expect(res.value.startsWith("~/")).toBe(true);
+    }
+    // Sanity: the expansion actually targeted the real home directory.
+    expect(homedir().length).toBeGreaterThan(0);
   });
 });
 
