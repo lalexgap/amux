@@ -2,19 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { nextBackoffMs, reverseTunnelArgs } from "../src/tunnel";
 
 describe("reverseTunnelArgs", () => {
-  test("builds a keepalive'd reverse forward to the local sshd", () => {
+  test("builds a keepalive'd reverse forward pinned to server loopback", () => {
     const argv = reverseTunnelArgs("server", 2222, 22);
     expect(argv[0]).toBe("ssh");
     expect(argv).toContain("-N");
     expect(argv).toContain("-R");
-    expect(argv).toContain("2222:localhost:22");
+    // explicit localhost: bind so the server can't expose it on its LAN
+    expect(argv).toContain("localhost:2222:localhost:22");
     expect(argv).toContain("ExitOnForwardFailure=yes");
     expect(argv).toContain("ServerAliveInterval=15");
     expect(argv.at(-1)).toBe("server"); // host is last
   });
 
   test("honors a custom server port and local sshd port", () => {
-    expect(reverseTunnelArgs("box", 9000, 2200)).toContain("9000:localhost:2200");
+    expect(reverseTunnelArgs("box", 9000, 2200)).toContain("localhost:9000:localhost:2200");
   });
 });
 

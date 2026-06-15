@@ -40,10 +40,23 @@ The tunnel forwards to the laptop's sshd, so it must be running.
 am tunnel <server>            # <server> = the ssh host alias of your always-on box
 ```
 
-This keeps `ssh -N -R <tunnelPort>:localhost:22 <server>` alive, reconnecting
-with backoff if the link drops. `tunnelPort` defaults to **2222**
-(`--port` or `config.tunnelPort` to change; `--ssh-port` if the laptop's sshd
-isn't on 22). Run it under a service so it persists — see `docs/am-tunnel.service`.
+This keeps `ssh -N -R localhost:<tunnelPort>:localhost:22 <server>` alive,
+reconnecting with backoff if the link drops. The `localhost:` bind pins the
+server-side listener to loopback, so the tunnel is reachable only *by the server
+itself*, never its LAN — regardless of the server's `GatewayPorts` setting.
+`tunnelPort` defaults to **2222** (`--port` or `config.tunnelPort`; `--ssh-port`
+if the laptop's sshd isn't on 22). Run it under a service so it persists — see
+`docs/am-tunnel.service`.
+
+> **Use a unique `tunnelPort` per roaming host.** The server-side port is the
+> rendezvous, so two laptops both defaulting to 2222 collide — the second one's
+> forward fails (`ExitOnForwardFailure`) and `am tunnel` just retries forever
+> without connecting. Give each roaming host its own port (`--port 2223`, …) and
+> a matching `Host` alias on the server.
+
+> **The server needs to ssh the laptop through the tunnel.** Put the server's
+> public key in the laptop's `~/.ssh/authorized_keys` (key-only auth), so
+> `am -H laptop …` on the server authenticates to the laptop's sshd.
 
 ### 3. On the server: add the laptop as a remote
 

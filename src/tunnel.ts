@@ -19,9 +19,12 @@ export interface TunnelOpts {
 }
 
 // The ssh argv for the reverse tunnel. Pure, for testing.
-// `-R <port>:localhost:<sshPort>` makes server:<port> forward to this host's
-// sshd. ExitOnForwardFailure so a port clash fails fast (we reconnect), and
-// keepalives so a dead link is detected promptly rather than hanging.
+// `-R localhost:<port>:localhost:<sshPort>` makes server:<port> forward to this
+// host's sshd. The explicit `localhost:` bind pins the server-side listener to
+// loopback regardless of the server's GatewayPorts setting — so the tunnel is
+// reachable only by the server itself, never exposed to its LAN. ExitOnForward
+// Failure so a port clash fails fast (we reconnect), and keepalives so a dead
+// link is detected promptly rather than hanging.
 export function reverseTunnelArgs(server: string, port: number, sshPort: number): string[] {
   return [
     "ssh",
@@ -29,8 +32,7 @@ export function reverseTunnelArgs(server: string, port: number, sshPort: number)
     "-o", "ExitOnForwardFailure=yes",
     "-o", "ServerAliveInterval=15",
     "-o", "ServerAliveCountMax=3",
-    "-o", "StreamLocalBindUnlink=yes",
-    "-R", `${port}:localhost:${sshPort}`,
+    "-R", `localhost:${port}:localhost:${sshPort}`,
     server,
   ];
 }
@@ -59,7 +61,9 @@ export async function runTunnel(server: string, opts: TunnelOpts = {}): Promise<
   const argv = reverseTunnelArgs(server, port, sshPort);
   console.log(`am tunnel: ${server} can reach this host via localhost:${port} (→ sshd :${sshPort})`);
 
-  let backoff = RECONNECT_MIN_MS;
+  // Start below the floor so the first reconnect lands at RECONNECT_MIN_MS (1s),
+  // then grows ×2; a healthy run resets it.
+  let backoff = RECONNECT_MIN_MS / 2;
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let stopping = false;
   const stop = () => {
@@ -72,12 +76,20 @@ export async function runTunnel(server: string, opts: TunnelOpts = {}): Promise<
 
   while (!stopping) {
     const startedAt = Date.now();
-    child = Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
-    const code = await child.exited;
-    if (stopping) break;
-    const uptime = Date.now() - startedAt;
+    let uptime = 0;
+    try {
+      child = Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" });
+      const code = await child.exited;
+      if (stopping) break;
+      uptime = Date.now() - startedAt;
+      console.error(`am tunnel: ssh exited (code ${code}, up ${Math.round(uptime / 1000)}s)`);
+    } catch (error) {
+      // e.g. ssh binary missing — don't crash the supervisor, just back off
+      if (stopping) break;
+      console.error(`am tunnel: could not start ssh: ${(error as Error).message}`);
+    }
     backoff = nextBackoffMs(backoff, uptime);
-    console.error(`am tunnel: ssh exited (code ${code}, up ${Math.round(uptime / 1000)}s) — reconnecting in ${backoff / 1000}s`);
+    console.error(`am tunnel: reconnecting in ${backoff / 1000}s`);
     await Bun.sleep(backoff);
   }
   process.exit(0);
