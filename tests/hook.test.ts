@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildInboxOutput, formatInbox, hookEffects } from "../src/commands/hook";
+import { buildInboxOutput, buildStopGate, formatInbox, hookEffects } from "../src/commands/hook";
 
 describe("hookEffects", () => {
   test("maps lifecycle events to statuses", () => {
@@ -63,5 +63,17 @@ describe("inbox surfacing (UserPromptSubmit)", () => {
     const out = JSON.parse(buildInboxOutput(["[am · from api] hi"])!);
     expect(out.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
     expect(out.hookSpecificOutput.additionalContext).toContain("[am · from api] hi");
+  });
+});
+
+describe("stop gate (Stop hook block)", () => {
+  test("null when empty; blocks with a reason carrying the messages otherwise", () => {
+    expect(buildStopGate([])).toBeNull();
+    const out = JSON.parse(buildStopGate(["[am · from api] ship it"])!);
+    expect(out.decision).toBe("block");
+    expect(out.reason).toContain("1 message from another agent");
+    expect(out.reason).toContain("[am · from api] ship it");
+    const two = JSON.parse(buildStopGate(["a", "b"])!);
+    expect(two.reason).toContain("2 messages from other agents");
   });
 });

@@ -100,6 +100,19 @@ export function buildInboxOutput(messages: string[]): string | null {
   });
 }
 
+// The JSON a Stop hook emits to BLOCK going idle when peer messages are waiting:
+// `{decision:"block", reason}` makes the agent keep going and handle them first,
+// so it never goes idle sitting on unread mail. Null when there's nothing. Pure.
+export function buildStopGate(messages: string[]): string | null {
+  if (messages.length === 0) return null;
+  const n = messages.length;
+  const reason =
+    `[am inbox] Before you finish: you have ${n} message${n === 1 ? "" : "s"} from ` +
+    `${n === 1 ? "another agent" : "other agents"} to handle first.\n\n${messages.join("\n")}\n\n` +
+    `Respond or act on these, then you can stop.`;
+  return JSON.stringify({ decision: "block", reason });
+}
+
 // On every prompt, drain this agent's queued peer messages and surface them as
 // context for the turn — so it reads its inbox automatically, no idle-wait, no
 // "check your messages" nudge. Drains under the delivery lock so it never races
@@ -118,6 +131,20 @@ function surfaceInbox(name: string): void {
   }
 }
 
+// At a Stop boundary: drain pending peer messages and return the block JSON, or
+// null if there's nothing (or another delivery is mid-flight — let it handle).
+function stopGate(name: string): string | null {
+  if (!acquireDeliverLock(name)) return null;
+  try {
+    const pending: string[] = [];
+    let m: string | null;
+    while ((m = queuePop(name)) !== null) pending.push(m);
+    return buildStopGate(pending);
+  } finally {
+    releaseDeliverLock(name);
+  }
+}
+
 export async function hookCommand(event: string): Promise<void> {
   const name = process.env.AGENTMGR_AGENT;
   if (!name) return; // not a managed session
@@ -125,6 +152,23 @@ export async function hookCommand(event: string): Promise<void> {
   if (!agent) return;
 
   const payload = await readStdinPayload();
+
+  // Stop gate ("the loop"): if the agent is about to go idle with unread peer
+  // messages, block the stop and feed them back so it handles them before
+  // finishing — it never goes idle sitting on unread mail. Cleaner than typing
+  // them into the pane (no Enter-swallow); the idle-drain still covers agents
+  // that are already idle when a message arrives.
+  if (event === "stop") {
+    const gate = stopGate(name);
+    if (gate) {
+      agent.status = "working"; // still active — it's continuing to handle messages
+      if (!agent.workingSince) agent.workingSince = new Date().toISOString();
+      writeAgent(agent);
+      process.stdout.write(gate);
+      return;
+    }
+  }
+
   const effects = hookEffects(event, payload);
 
   const workingSince = agent.workingSince;
