@@ -58,11 +58,15 @@ describe("inbox surfacing (UserPromptSubmit)", () => {
     expect(two).toContain("[am · from lead] b");
   });
 
-  test("buildInboxOutput: null when empty, UserPromptSubmit additionalContext otherwise", () => {
-    expect(buildInboxOutput([])).toBeNull();
-    const out = JSON.parse(buildInboxOutput(["[am · from api] hi"])!);
-    expect(out.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
-    expect(out.hookSpecificOutput.additionalContext).toContain("[am · from api] hi");
+  test("buildInboxOutput: null when empty, additionalContext tagged for the given event", () => {
+    expect(buildInboxOutput([], "UserPromptSubmit")).toBeNull();
+    const ups = JSON.parse(buildInboxOutput(["[am · from api] hi"], "UserPromptSubmit")!);
+    expect(ups.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(ups.hookSpecificOutput.additionalContext).toContain("[am · from api] hi");
+    // mid-turn surfacing reuses the same path, tagged for PostToolUse
+    const ptu = JSON.parse(buildInboxOutput(["[am · from lead] go"], "PostToolUse")!);
+    expect(ptu.hookSpecificOutput.hookEventName).toBe("PostToolUse");
+    expect(ptu.hookSpecificOutput.additionalContext).toContain("[am · from lead] go");
   });
 });
 

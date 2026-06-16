@@ -88,15 +88,20 @@ export function formatInbox(messages: string[]): string {
     n === 1
       ? "You have 1 message from another agent (it arrived while you were busy):"
       : `You have ${n} messages from other agents (they arrived while you were busy):`;
-  return `[am inbox] ${header}\n\n${messages.join("\n")}\n\nAddress or act on these as appropriate, then continue with the prompt below.`;
+  return `[am inbox] ${header}\n\n${messages.join("\n")}\n\nAddress or act on these as appropriate, then continue.`;
 }
 
-// The JSON a UserPromptSubmit hook emits to inject context, or null if there's
-// nothing to surface. Pure, for testing.
-export function buildInboxOutput(messages: string[]): string | null {
+// We surface the inbox on UserPromptSubmit (turn start) AND PostToolUse (between
+// tool calls, mid-turn) so a busy agent picks up messages without waiting for
+// its turn to end — both honor hookSpecificOutput.additionalContext.
+export type SurfaceEvent = "UserPromptSubmit" | "PostToolUse";
+
+// The JSON these hooks emit to inject context, or null if there's nothing to
+// surface. Pure, for testing.
+export function buildInboxOutput(messages: string[], hookEventName: SurfaceEvent): string | null {
   if (messages.length === 0) return null;
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatInbox(messages) },
+    hookSpecificOutput: { hookEventName, additionalContext: formatInbox(messages) },
   });
 }
 
@@ -113,18 +118,21 @@ export function buildStopGate(messages: string[]): string | null {
   return JSON.stringify({ decision: "block", reason });
 }
 
-// On every prompt, drain this agent's queued peer messages and surface them as
-// context for the turn — so it reads its inbox automatically, no idle-wait, no
-// "check your messages" nudge. Drains under the delivery lock so it never races
-// the idle-drain (deliverNext): atomic + lock-guarded means each message is
-// consumed exactly once whether it's surfaced here or typed in on idle.
-function surfaceInbox(name: string): void {
+// Drain this agent's queued peer messages and surface them as context — so it
+// reads its inbox automatically at the start of every turn AND between tool
+// calls mid-turn, no idle-wait, no "check your messages" nudge. queueDepth
+// fast-path keeps the common (empty) case cheap on PostToolUse, which fires
+// after every tool. Drains under the delivery lock so it never races the
+// idle-drain (deliverNext): atomic + lock-guarded means each message is consumed
+// exactly once whether it's surfaced here or typed in on idle.
+function surfaceInbox(name: string, hookEventName: SurfaceEvent): void {
+  if (queueDepth(name) === 0) return; // nothing pending — avoid lock churn per tool call
   if (!acquireDeliverLock(name)) return; // deliverNext is mid-delivery — it'll handle them
   try {
     const pending: string[] = [];
     let m: string | null;
     while ((m = queuePop(name)) !== null) pending.push(m);
-    const out = buildInboxOutput(pending);
+    const out = buildInboxOutput(pending, hookEventName);
     if (out) process.stdout.write(out);
   } finally {
     releaseDeliverLock(name);
@@ -186,9 +194,11 @@ export async function hookCommand(event: string): Promise<void> {
   if (event === "stop" || event === "session-end") agent.workingSince = undefined;
   writeAgent(agent);
 
-  // Surface any queued peer messages into this turn's context so the agent reads
-  // them automatically (UserPromptSubmit stdout is injected as context).
-  if (event === "user-prompt-submit") surfaceInbox(name);
+  // Surface any queued peer messages into context so the agent reads them
+  // automatically — at turn start (UserPromptSubmit) and between tool calls
+  // mid-turn (PostToolUse), so a busy agent doesn't have to finish its turn first.
+  if (event === "user-prompt-submit") surfaceInbox(name, "UserPromptSubmit");
+  else if (event === "post-tool-use") surfaceInbox(name, "PostToolUse");
 
   // Keep a last-screen snapshot so the picker can preview dead agents.
   let pane: string[] | null = null;
