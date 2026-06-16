@@ -63,6 +63,10 @@ am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 am report api --to lead   # api now reports progress to lead (see below)
 am comms api              # recent messages to/from api
 
+am search "rate limit"   # full-text search across every agent's chat; prints
+                         # matches + snippets + the command to pick each up
+                         # (--all spans past sessions too; --fleet spans remotes)
+
 am transcript api        # render the agent's conversation as markdown
                          # (--full keeps complete tool output; --out <file>)
 am handoff api           # hand the work to a fresh agent on the OTHER provider,

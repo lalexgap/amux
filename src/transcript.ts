@@ -181,6 +181,85 @@ export function parseTranscript(provider: Provider, jsonl: string): Transcript {
   return provider === "codex" ? parseCodexTranscript(jsonl) : parseClaudeTranscript(jsonl);
 }
 
+// A single conversation line's searchable text, role-labeled. `am search` runs
+// ripgrep over the raw JSONL (fast at any size), then feeds each matched line
+// here to recover clean snippet text — applying the SAME noise/harness rules as
+// the full parsers above, so a hit inside a uuid, a tool envelope, or a harness
+// banner yields no fragment and is dropped. Returns [] for structural/meta lines.
+export interface Fragment {
+  kind: "user" | "assistant" | "tool";
+  text: string;
+}
+
+export function entryFragments(provider: Provider, entry: Record<string, any>): Fragment[] {
+  return provider === "codex" ? codexEntryFragments(entry) : claudeEntryFragments(entry);
+}
+
+function claudeEntryFragments(entry: Record<string, any>): Fragment[] {
+  if (entry.isSidechain || entry.isMeta) return [];
+  if (entry.type !== "user" && entry.type !== "assistant") return [];
+  const out: Fragment[] = [];
+  const content = entry.message?.content;
+  if (entry.type === "user") {
+    if (typeof content === "string") {
+      if (content.trim() && !CLAUDE_HARNESS_PREFIXES.some((p) => content.startsWith(p))) {
+        out.push({ kind: "user", text: content });
+      }
+      return out;
+    }
+    if (!Array.isArray(content)) return out;
+    for (const block of content) {
+      if (block.type === "text" && block.text?.trim()) {
+        if (!CLAUDE_HARNESS_PREFIXES.some((p) => block.text.startsWith(p))) {
+          out.push({ kind: "user", text: block.text });
+        }
+      } else if (block.type === "tool_result") {
+        const text = flattenToolResult(block.content);
+        if (text.trim()) out.push({ kind: "tool", text });
+      }
+    }
+    return out;
+  }
+  if (!Array.isArray(content)) return out;
+  for (const block of content) {
+    if (block.type === "text" && block.text?.trim()) {
+      out.push({ kind: "assistant", text: block.text });
+    } else if (block.type === "tool_use") {
+      const input = compactValue(block.input);
+      if (input.trim()) out.push({ kind: "tool", text: `${block.name ?? "tool"} ${input}` });
+    }
+  }
+  return out;
+}
+
+function codexEntryFragments(entry: Record<string, any>): Fragment[] {
+  const payload = entry.payload;
+  if (entry.type !== "response_item" || !payload) return [];
+  const out: Fragment[] = [];
+  if (payload.type === "message") {
+    const text = Array.isArray(payload.content)
+      ? payload.content.map((c: any) => (typeof c?.text === "string" ? c.text : "")).filter(Boolean).join("\n")
+      : "";
+    if (!text.trim()) return out;
+    if (payload.role === "user") {
+      if (CODEX_HARNESS_PREFIXES.some((p) => text.startsWith(p))) return out;
+      out.push({ kind: "user", text });
+    } else if (payload.role === "assistant") {
+      out.push({ kind: "assistant", text });
+    }
+  } else if (payload.type === "function_call" || payload.type === "custom_tool_call") {
+    const input = compactValue(payload.arguments ?? payload.input);
+    if (input.trim()) out.push({ kind: "tool", text: `${payload.name ?? "tool"} ${input}` });
+  } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
+    const text = extractCodexOutput(payload.output);
+    if (text.trim()) out.push({ kind: "tool", text });
+  } else if (payload.type === "local_shell_call") {
+    const input = compactValue(payload.action?.command ?? payload.action);
+    if (input.trim()) out.push({ kind: "tool", text: `shell ${input}` });
+  }
+  return out;
+}
+
 // Find the agent's native session file. Hook payloads from both providers
 // include transcript_path, so the captured path is authoritative; the
 // fallbacks reconstruct it from the session id.
