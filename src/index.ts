@@ -24,6 +24,7 @@ import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands
 import { cdHandler, cloneHandler, handoffHandler, moveHandler } from "./commands/fleetActions";
 import { isForwardable, remoteExec, sshAm, sshAmInteractive, stripHostArgs } from "./remote";
 import { resolveSender } from "./comms";
+import { resolveTask } from "./task";
 import { cachedRemotePreview, cachedRemoteRow, fleetPickerItems, fleetRows, splitFleetKey, shortHost, toggleGroupMode } from "./fleet";
 import { loadConfig } from "./config";
 import { capturePane, hasSession, insideTmux } from "./tmux";
@@ -47,10 +48,12 @@ usage:
   am pick                     classic fullscreen picker (enter attaches)
   am j <prefix>               jump to agent (prefix match)
   am -                        jump to previous agent
-  am new <name> [-m msg] [--dir path] [--codex] [--remote | --no-remote]
-                [--model <m>] [--effort <level>]
+  am new <name> [-m msg | -m - | --file path] [--dir path] [--codex]
+                [--remote | --no-remote] [--model <m>] [--effort <level>]
                               spawn a new agent in tmux and jump into it
-                              (--no-jump to stay; non-TTY callers never jump;
+                              (-m - reads the task from stdin, --file <path> from
+                               a file — both dodge shell quoting for long tasks;
+                               --no-jump to stay; non-TTY callers never jump;
                                --codex runs Codex instead of Claude Code;
                                --model / --effort override the provider defaults)
                               git repos get a fresh worktree on branch am/<name>
@@ -182,6 +185,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
   if (!body) throw new Error("no message on stdin");
   return body;
 }
+
 
 // Agent-targeting commands resolve across the whole fleet: an explicit
 // host:name always routes to that host, and a prefix that matches nothing
@@ -376,7 +380,7 @@ async function main(): Promise<void> {
     case "new":
       await newCommand({
         name: requirePositional(args, 0, "agent name"),
-        message: (args.flags.m ?? args.flags.message) as string | undefined,
+        message: await resolveTask(args.flags),
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
         provider: args.flags.codex ? "codex" : undefined,
@@ -393,8 +397,8 @@ async function main(): Promise<void> {
       break;
     case "run": {
       const runName = requirePositional(args, 0, "agent name");
-      const runMessage = (args.flags.m ?? args.flags.message) as string | undefined;
-      if (!runMessage) throw new Error("am run requires a task: -m \"<task>\"");
+      const runMessage = await resolveTask(args.flags);
+      if (!runMessage) throw new Error("am run requires a task: -m \"<task>\" (or --file <path>)");
       await runCommand(runName, {
         message: runMessage,
         dir: args.flags.dir as string | undefined,
