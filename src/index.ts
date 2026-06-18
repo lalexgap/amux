@@ -18,6 +18,7 @@ import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
 import { transcriptCommand } from "./commands/transcript";
+import { searchCommand } from "./commands/search";
 import { handoffCommand } from "./commands/handoff";
 import { clickCommand } from "./commands/click";
 import { cdCommand, exportCommand, importCommand, moveCommand } from "./commands/move";
@@ -89,6 +90,11 @@ usage:
   am queue <name> [--clear]   show or clear an agent's pending queue
   am transcript <name> [--full] [--out file]
                               render the agent's conversation as markdown
+  am search <query> [--all] [--fleet] [--limit n] [--json]
+                              full-text search agent chats; prints matching
+                              agents + snippets + the command to pick each up
+                              (default: registered agents + trash; --all widens
+                               to every past session; --fleet spans config.remotes)
   am handoff <name> [new-name] [--to claude|codex]
                               hand the agent's work to a new agent on the other
                               provider, briefed with the rendered transcript
@@ -134,7 +140,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -478,6 +484,17 @@ async function main(): Promise<void> {
       transcriptCommand(requirePositional(args, 0, "agent name"), {
         full: !!args.flags.full,
         out: args.flags.out as string | undefined,
+      });
+      break;
+    case "search":
+    case "s":
+      requirePositional(args, 0, "search query");
+      searchCommand(args.positional.join(" "), {
+        all: !!args.flags.all,
+        fleet: !!args.flags.fleet,
+        localOnly: !!args.flags["local-only"],
+        json: !!args.flags.json,
+        limit: args.flags.limit ? Number(args.flags.limit) : undefined,
       });
       break;
     case "handoff":

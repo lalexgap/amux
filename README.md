@@ -63,6 +63,10 @@ am interrupt api "stop — wrong branch"     # Esc to abort the turn, then send
 am report api --to lead   # api now reports progress to lead (see below)
 am comms api              # recent messages to/from api
 
+am search "rate limit"   # full-text search across every agent's chat; prints
+                         # matches + snippets + the command to pick each up
+                         # (--all spans past sessions too; --fleet spans remotes)
+
 am transcript api        # render the agent's conversation as markdown
                          # (--full keeps complete tool output; --out <file>)
 am handoff api           # hand the work to a fresh agent on the OTHER provider,
@@ -205,7 +209,7 @@ Inside an agent's session, press **`ctrl-q`** — it detaches (the agent keeps w
   the same $HOME-relative path (repos are assumed cloned on both sides;
   uncommitted changes never travel), and the agent resumes on the target with its
   context intact.
-- **Durable agents**: agents survive as more than processes. The initial task is stored and searchable in the picker (filter matches name, task, and directory), the Stop hook keeps a last-screen snapshot so dead agents still show a preview, and conversations persist on disk — so days later you can find an agent by what it was doing and `am resume` it with its context intact, even across reboots (tmux sessions die on reboot; the agent's identity and conversation don't).
+- **Durable agents**: agents survive as more than processes. The initial task is stored and searchable in the picker (`f` filters name, task, and directory; `/` searches the full chat text), the Stop hook keeps a last-screen snapshot so dead agents still show a preview, and conversations persist on disk — so days later you can find an agent by what it said (`am search`, or `/` in the picker) and `am resume` it with its context intact, even across reboots (tmux sessions die on reboot; the agent's identity and conversation don't).
 
 All state lives in `~/.agent-manager/` as plain JSON — easy to inspect, easy to nuke.
 
