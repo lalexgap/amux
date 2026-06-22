@@ -152,12 +152,32 @@ export function insideTmux(): boolean {
   return !!process.env.TMUX;
 }
 
+// Make the tmux we're running inside surface the focused pane's title as the
+// terminal title. Agent sessions (and the hub) already set their own titles,
+// but when you reach them through your OWN outer tmux — e.g. tmux on your
+// laptop, attached over ssh — that outer layer owns the real terminal title,
+// and with set-titles off it swallows the inner session's title (so the tab
+// never changes). Enable forwarding on whatever layer am runs in, but only
+// when you aren't already managing titles yourself, so a custom set-titles
+// config is left untouched.
+export function ensureClientTitles(): void {
+  if (!insideTmux()) return;
+  // display-message renders the boolean as 1/0 (not on/off).
+  const current = tmux("display-message", "-p", "#{set-titles}").stdout.trim();
+  if (current === "1" || current === "on") return;
+  tmux("set-option", "set-titles", "on");
+  tmux("set-option", "set-titles-string", "#{pane_title}");
+}
+
 export function hasAttachedClient(session: string): boolean {
   const result = tmux("list-clients", "-t", `=${session}:`);
   return result.exitCode === 0 && result.stdout.trim() !== "";
 }
 
 export function attachOrSwitch(session: string): void {
+  // Configure the layer we're attaching FROM to forward titles upward, so the
+  // agent name reaches the real terminal even through an outer tmux.
+  ensureClientTitles();
   const args = insideTmux()
     ? ["switch-client", "-t", `=${session}`]
     : ["attach-session", "-t", `=${session}`];
