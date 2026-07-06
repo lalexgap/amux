@@ -100,7 +100,10 @@ function refreshHost(host: string): void {
       });
     },
     () => {
-      cache.set(host, { rows: [], fetchedAt: Date.now(), ok: false, inFlight: false });
+      // Keep the last-known rows on a transient failure (matches the
+      // result-path fallback) — a blip shouldn't blank a host from the hub.
+      const prev = cache.get(host);
+      cache.set(host, { rows: prev?.rows ?? [], fetchedAt: Date.now(), ok: false, inFlight: false });
     },
   );
 }

@@ -88,6 +88,17 @@ export function handoffsDir(): string {
   return join(baseDir(), "handoffs");
 }
 
+// The daemon runs detached; its output lands here (size-capped, rotated to
+// .old) instead of being discarded — otherwise collector/delivery failures
+// are invisible.
+export function logsDir(): string {
+  return join(baseDir(), "logs");
+}
+
+export function daemonLogFile(): string {
+  return join(logsDir(), "daemon.log");
+}
+
 export function daemonSocket(): string {
   return join(baseDir(), "daemon.sock");
 }

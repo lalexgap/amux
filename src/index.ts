@@ -173,6 +173,18 @@ function requirePositional(args: ParsedArgs, index: number, what: string): strin
   return value;
 }
 
+// Numeric flag values must fail loudly: Number("5m") is NaN, which silently
+// became an instant `am run` timeout / a broken port instead of an error.
+function numberFlag(args: ParsedArgs, key: string): number | undefined {
+  const raw = args.flags[key];
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (typeof raw !== "string" || raw.trim() === "" || !Number.isFinite(n)) {
+    throw new Error(`flag --${key} requires a numeric value, got "${raw}"`);
+  }
+  return n;
+}
+
 // Remaining positionals after the agent name form the message, so quoting
 // the whole message is optional: `am send api fix the tests` works.
 function messageFrom(args: ParsedArgs): string {
@@ -412,7 +424,7 @@ async function main(): Promise<void> {
         provider: args.flags.codex ? "codex" : undefined,
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
-        timeoutSec: args.flags.timeout ? Number(args.flags.timeout) : undefined,
+        timeoutSec: numberFlag(args, "timeout"),
         rm: !!args.flags.rm,
         json: !!args.flags.json,
       });
@@ -494,7 +506,7 @@ async function main(): Promise<void> {
         fleet: !!args.flags.fleet,
         localOnly: !!args.flags["local-only"],
         json: !!args.flags.json,
-        limit: args.flags.limit ? Number(args.flags.limit) : undefined,
+        limit: numberFlag(args, "limit"),
       });
       break;
     case "handoff":
@@ -546,7 +558,7 @@ async function main(): Promise<void> {
       break;
     case "serve":
       serveCommand({
-        port: args.flags.port ? Number(args.flags.port) : undefined,
+        port: numberFlag(args, "port"),
         bind: args.flags.bind as string | undefined,
       });
       return; // keep the process alive serving HTTP
@@ -558,8 +570,8 @@ async function main(): Promise<void> {
       break;
     case "tunnel":
       await runTunnel(requirePositional(args, 0, "server host"), {
-        port: args.flags.port ? Number(args.flags.port) : undefined,
-        sshPort: args.flags["ssh-port"] ? Number(args.flags["ssh-port"]) : undefined,
+        port: numberFlag(args, "port"),
+        sshPort: numberFlag(args, "ssh-port"),
       });
       return; // long-runner — supervises the reverse tunnel until killed
     case "__sidebar":

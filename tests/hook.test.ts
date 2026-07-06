@@ -51,11 +51,20 @@ describe("hookEffects", () => {
 describe("inbox surfacing (UserPromptSubmit)", () => {
   test("formatInbox singular vs plural, includes the messages", () => {
     const one = formatInbox(["[am · from api] ping"]);
-    expect(one).toContain("1 message from another agent");
+    expect(one).toContain("You have 1 message");
     expect(one).toContain("[am · from api] ping");
     const two = formatInbox(["[am · from api] a", "[am · from lead] b"]);
-    expect(two).toContain("2 messages from other agents");
+    expect(two).toContain("You have 2 messages");
     expect(two).toContain("[am · from lead] b");
+  });
+
+  test("formatInbox never claims operator messages are from agents", () => {
+    // The queue holds unenveloped operator sends too — the header must stay
+    // sender-neutral and the key must explain how to tell them apart.
+    const mixed = formatInbox(["fix the tests please", "[am · from api] ping"]);
+    expect(mixed).not.toContain("from other agents");
+    expect(mixed).not.toContain("from another agent");
+    expect(mixed).toContain("from your operator");
   });
 
   test("buildInboxOutput: null when empty, additionalContext tagged for the given event", () => {
@@ -75,10 +84,11 @@ describe("stop gate (Stop hook block)", () => {
     expect(buildStopGate([])).toBeNull();
     const out = JSON.parse(buildStopGate(["[am · from api] ship it"])!);
     expect(out.decision).toBe("block");
-    expect(out.reason).toContain("1 message from another agent");
+    expect(out.reason).toContain("you have 1 message");
     expect(out.reason).toContain("[am · from api] ship it");
     const two = JSON.parse(buildStopGate(["a", "b"])!);
-    expect(two.reason).toContain("2 messages from other agents");
+    expect(two.reason).toContain("you have 2 messages");
+    expect(two.reason).not.toContain("from other agents");
   });
 });
 

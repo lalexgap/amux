@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -60,6 +60,20 @@ describe("agent state", () => {
   test("setStatus on unknown agent is a no-op", () => {
     setStatus("ghost", "working");
     expect(readAgent("ghost")).toBeNull();
+  });
+
+  test("a corrupt state file is skipped, not fatal", () => {
+    writeAgent(makeAgent("alpha"));
+    writeFileSync(join(home, "agents", "torn.json"), '{"name": "torn", "status"');
+
+    expect(readAgent("torn")).toBeNull();
+    expect(listAgents().map((a) => a.name)).toEqual(["alpha"]);
+  });
+
+  test("writes are atomic — no lingering partial .json files", () => {
+    writeAgent(makeAgent("alpha"));
+    const files = readdirSync(join(home, "agents"));
+    expect(files).toEqual(["alpha.json"]);
   });
 });
 

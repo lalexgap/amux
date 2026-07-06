@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { daemonPidFile, daemonSocket } from "../paths";
+import { daemonLogFile, daemonPidFile, daemonSocket } from "../paths";
 import { daemonHealth, ensureDaemon, readDaemonPid } from "../daemon";
 
 export async function daemonCommand(action: string | undefined): Promise<void> {
@@ -32,6 +32,7 @@ export async function daemonCommand(action: string | undefined): Promise<void> {
       if (health) {
         console.log(`daemon running (pid ${health.pid}, since ${health.startedAt})`);
         console.log(`socket: ${daemonSocket()}`);
+        console.log(`log:    ${daemonLogFile()}`);
       } else {
         console.log("daemon not running — start it with `am daemon start`");
       }

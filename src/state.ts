@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentsDir, ensureDirs, lastAttachedFile } from "./paths";
 
@@ -57,16 +57,36 @@ function stateFile(name: string): string {
   return join(agentsDir(), `${name}.json`);
 }
 
+// Tolerant read: a torn/corrupt state file is treated as absent instead of
+// throwing — one bad byte must not brick every am command (and every hook).
+function readStateFile(file: string): AgentState | null {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as AgentState;
+  } catch {
+    return null;
+  }
+}
+
 export function readAgent(name: string): AgentState | null {
   const file = stateFile(name);
   if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, "utf8")) as AgentState;
+  return readStateFile(file);
+}
+
+// Unique tmp + rename: state files are written by several processes at once
+// (hooks, the CLI, the daemon) and read constantly — a reader must never see
+// a torn write, and two concurrent writers must never interleave into
+// invalid JSON. Last rename wins with a complete document either way.
+function writeJsonAtomic(file: string, value: unknown): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+  renameSync(tmp, file);
 }
 
 export function writeAgent(state: AgentState): void {
   ensureDirs();
   state.updatedAt = new Date().toISOString();
-  writeFileSync(stateFile(state.name), JSON.stringify(state, null, 2) + "\n");
+  writeJsonAtomic(stateFile(state.name), state);
 }
 
 export function setStatus(name: string, status: AgentStatus): void {
@@ -84,7 +104,8 @@ export function listAgents(): AgentState[] {
   if (!existsSync(agentsDir())) return [];
   return readdirSync(agentsDir())
     .filter((f) => f.endsWith(".json"))
-    .map((f) => JSON.parse(readFileSync(join(agentsDir(), f), "utf8")) as AgentState)
+    .map((f) => readStateFile(join(agentsDir(), f)))
+    .filter((s): s is AgentState => s !== null)
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -111,15 +132,16 @@ interface LastAttached {
 
 export function readLastAttached(): LastAttached {
   if (!existsSync(lastAttachedFile())) return {};
-  return JSON.parse(readFileSync(lastAttachedFile(), "utf8")) as LastAttached;
+  try {
+    return JSON.parse(readFileSync(lastAttachedFile(), "utf8")) as LastAttached;
+  } catch {
+    return {};
+  }
 }
 
 export function recordAttached(name: string): void {
   ensureDirs();
   const last = readLastAttached();
   if (last.current === name) return;
-  writeFileSync(
-    lastAttachedFile(),
-    JSON.stringify({ current: name, previous: last.current }, null, 2) + "\n",
-  );
+  writeJsonAtomic(lastAttachedFile(), { current: name, previous: last.current });
 }
