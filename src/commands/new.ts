@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensureDirs, worktreesDir, expandHome } from "../paths";
-import { readAgent, recordAttached, writeAgent, type AgentState, type Provider } from "../state";
+import { readAgent, recordAttached, removeAgent, writeAgent, type AgentState, type Provider } from "../state";
 import { attachOrSwitch, hasSession, newSession, sessionName } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { loadConfig } from "../config";
-import { queueAppend } from "../queue";
+import { queueAppend, queueClear } from "../queue";
 import {
   agentSystemPrompt,
   buildLaunchCommand,
@@ -142,10 +142,6 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
 
   const plan = buildLaunchCommand(provider, name, { ...opts, reportTo });
-  // Queue before the session starts so the SessionStart hook finds it.
-  if (plan.deferredMessage) queueAppend(name, plan.deferredMessage);
-
-  newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(plan.command) });
 
   const now = new Date().toISOString();
   const state: AgentState = {
@@ -163,7 +159,20 @@ export async function newCommand(opts: NewOptions): Promise<void> {
     createdAt: now,
     updatedAt: now,
   };
+  // Register the agent BEFORE its queue and session exist: the SessionStart
+  // hook reads the state file to drain the queue, and gc's orphan scan treats
+  // a queue without a registered owner as garbage.
   writeAgent(state);
+  // Queue before the session starts so the SessionStart hook finds it.
+  if (plan.deferredMessage) queueAppend(name, plan.deferredMessage);
+
+  try {
+    newSession({ session, dir, env: agentEnv(name), command: scrubNestedSessionEnv(plan.command) });
+  } catch (error) {
+    removeAgent(name);
+    queueClear(name);
+    throw error;
+  }
 
   if (!opts.quiet) console.log(`started agent "${name}" in ${dir}`);
   if (hooksChanged && !opts.quiet) {

@@ -63,8 +63,12 @@ export function commsLogFile(): string {
 
 // Where files handed to an agent land (am send --file). A dedicated drop so a
 // handoff never clobbers the agent's repo/worktree; the note carries the path.
+export function inboxRootDir(): string {
+  return join(baseDir(), "inbox");
+}
+
 export function inboxDir(name: string): string {
-  return join(baseDir(), "inbox", name);
+  return join(inboxRootDir(), name);
 }
 
 // Store-and-forward for sends whose target can't be reached from here (the
