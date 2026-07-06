@@ -1,10 +1,14 @@
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { listAgents, type AgentState } from "./state";
+import { existsSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { listAgents, readAgent, type AgentState } from "./state";
 import { listTrashed, removeTrashed, type TrashedState } from "./trash";
 import { hasSession } from "./tmux";
-import { agentsDir, baseDir, queueDir, snapshotsDir, worktreesDir } from "./paths";
+import { agentsDir, inboxRootDir, queueDir, trashDir, worktreesDir } from "./paths";
+import { queueEntryOwner } from "./queue";
+import { listSnapshots } from "./snapshots";
+import { readJsonOrNull } from "./fsutil";
 import { destroyAgent } from "./commands/rm";
+import { inferWorktree, withWorktreeMeta } from "./commands/move";
 
 // Lifecycle GC: agents, trash, and their on-disk leavings only ever
 // accumulate. `am gc` plans (dry-run by default) and applies collection of:
@@ -14,38 +18,67 @@ import { destroyAgent } from "./commands/rm";
 //   • trash snapshots older than gcTrashDays
 //   • orphaned queue/inbox/snapshot files whose agent no longer exists
 //   • unreferenced worktrees under ~/.agent-manager/worktrees — removed only
-//     when clean (the branch itself survives in the repo, so committed work
-//     is never lost; dirty worktrees are reported and kept)
+//     when clean AND unclaimed by any live or restorable (trashed) agent; the
+//     branch itself survives in the repo, so committed work is never lost
 
 const DAY_MS = 86_400_000;
+// A just-created stray may belong to an agent mid-registration or mid-move —
+// only files old enough that no in-flight operation can own them are garbage.
+const ORPHAN_GRACE_MS = DAY_MS;
 
 export interface GcOptions {
   agentDays: number;
   trashDays: number;
-  now?: number;
 }
 
 export interface OrphanCandidate {
   kind: "queue" | "inbox" | "snapshot" | "corrupt-state";
   path: string;
+  // The agent name this file would belong to — re-checked at apply time so a
+  // name that got (re)registered since planning is left alone.
+  owner?: string;
 }
 
-export interface WorktreeCandidate {
+export interface WorktreeRemoval {
   path: string;
-  action: "remove" | "keep";
+  repoRoot: string;
+}
+
+export interface KeptWorktree {
+  path: string;
   reason: string;
-  repoRoot?: string;
 }
 
 export interface GcPlan {
   agents: AgentState[];
   trash: TrashedState[];
   orphans: OrphanCandidate[];
-  worktrees: WorktreeCandidate[];
+  worktrees: WorktreeRemoval[];
+  // Unreferenced but deliberately not collected — surfaced so the user knows.
+  keptWorktrees: KeptWorktree[];
 }
 
-function ageDays(iso: string, now: number): number {
-  return (now - Date.parse(iso)) / DAY_MS;
+// Missing/garbage timestamps read as infinitely old: gc exists to collect
+// exactly the records nothing maintains anymore.
+function ageDays(iso: string | undefined, now: number): number {
+  const ms = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(ms) ? (now - ms) / DAY_MS : Infinity;
+}
+
+function olderThan(path: string, ms: number, now: number): boolean {
+  try {
+    return now - statSync(path).mtimeMs > ms;
+  } catch {
+    return false; // vanished — nothing to collect
+  }
+}
+
+function canon(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 function git(dir: string, ...args: string[]): { ok: boolean; out: string; err: string } {
@@ -53,45 +86,38 @@ function git(dir: string, ...args: string[]): { ok: boolean; out: string; err: s
   return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
 }
 
-// The name a stray file in queueDir belongs to: an agent's message dir, its
-// legacy jsonl (or a stranded pre-maildir migration claim), or a deliver lock.
-export function queueEntryOwner(entry: string, isDir: boolean): string | null {
-  if (isDir) return entry;
-  const m = /^(.+?)\.(jsonl(\..+)?|deliver\.lock)$/.exec(entry);
-  return m ? m[1]! : null;
-}
-
-function orphanScan(liveNames: Set<string>, trashNames: Set<string>, trashDays: number, now: number): OrphanCandidate[] {
+function orphanScan(
+  liveNames: Set<string>,
+  restorableNames: Set<string>,
+  trashDays: number,
+  now: number,
+): OrphanCandidate[] {
   const orphans: OrphanCandidate[] = [];
 
   if (existsSync(queueDir())) {
     for (const entry of readdirSync(queueDir(), { withFileTypes: true })) {
       const owner = queueEntryOwner(entry.name, entry.isDirectory());
       // A live agent's queue and (transient) deliver lock are load-bearing —
-      // only files whose owner no longer exists are garbage.
-      if (owner && !liveNames.has(owner)) {
-        orphans.push({ kind: "queue", path: join(queueDir(), entry.name) });
-      }
+      // only old files whose owner no longer exists are garbage.
+      if (!owner || liveNames.has(owner)) continue;
+      const path = join(queueDir(), entry.name);
+      if (olderThan(path, ORPHAN_GRACE_MS, now)) orphans.push({ kind: "queue", path, owner });
     }
   }
 
-  if (existsSync(snapshotsDir())) {
-    for (const f of readdirSync(snapshotsDir())) {
-      const name = f.replace(/\.txt$/, "");
-      if (f.endsWith(".txt") && !liveNames.has(name)) {
-        orphans.push({ kind: "snapshot", path: join(snapshotsDir(), f) });
-      }
+  for (const s of listSnapshots()) {
+    if (!liveNames.has(s.name) && olderThan(s.path, ORPHAN_GRACE_MS, now)) {
+      orphans.push({ kind: "snapshot", path: s.path, owner: s.name });
     }
   }
 
   // Inboxes hold files handed to the agent; a restorable (trashed) agent may
   // still come back for them, so only truly ownerless inboxes go.
-  const inboxRoot = join(baseDir(), "inbox");
-  if (existsSync(inboxRoot)) {
-    for (const name of readdirSync(inboxRoot)) {
-      if (!liveNames.has(name) && !trashNames.has(name)) {
-        orphans.push({ kind: "inbox", path: join(inboxRoot, name) });
-      }
+  if (existsSync(inboxRootDir())) {
+    for (const name of readdirSync(inboxRootDir())) {
+      if (liveNames.has(name) || restorableNames.has(name)) continue;
+      const path = join(inboxRootDir(), name);
+      if (olderThan(path, ORPHAN_GRACE_MS, now)) orphans.push({ kind: "inbox", path, owner: name });
     }
   }
 
@@ -101,12 +127,18 @@ function orphanScan(liveNames: Set<string>, trashNames: Set<string>, trashDays: 
     for (const f of readdirSync(agentsDir())) {
       if (!f.endsWith(".corrupt") && !f.endsWith(".tmp")) continue;
       const path = join(agentsDir(), f);
-      try {
-        if (now - statSync(path).mtimeMs > trashDays * DAY_MS) {
-          orphans.push({ kind: "corrupt-state", path });
-        }
-      } catch {
-        // vanished — nothing to collect
+      if (olderThan(path, trashDays * DAY_MS, now)) orphans.push({ kind: "corrupt-state", path });
+    }
+  }
+
+  // Unparseable trash snapshots are invisible to listTrashed (and so to the
+  // normal purge) — collect them here or they live forever.
+  if (existsSync(trashDir())) {
+    for (const f of readdirSync(trashDir())) {
+      if (!f.endsWith(".json")) continue;
+      const path = join(trashDir(), f);
+      if (readJsonOrNull(path) === null && olderThan(path, trashDays * DAY_MS, now)) {
+        orphans.push({ kind: "corrupt-state", path });
       }
     }
   }
@@ -114,69 +146,85 @@ function orphanScan(liveNames: Set<string>, trashNames: Set<string>, trashDays: 
   return orphans;
 }
 
-function worktreeScan(referenced: Set<string>): WorktreeCandidate[] {
-  const out: WorktreeCandidate[] = [];
-  if (!existsSync(worktreesDir())) return out;
+function worktreeScan(referenced: Set<string>): { remove: WorktreeRemoval[]; kept: KeptWorktree[] } {
+  const remove: WorktreeRemoval[] = [];
+  const kept: KeptWorktree[] = [];
+  if (!existsSync(worktreesDir())) return { remove, kept };
   for (const repo of readdirSync(worktreesDir(), { withFileTypes: true })) {
     if (!repo.isDirectory()) continue;
     const repoDir = join(worktreesDir(), repo.name);
     for (const wt of readdirSync(repoDir, { withFileTypes: true })) {
       if (!wt.isDirectory()) continue;
       const path = join(repoDir, wt.name);
-      if (referenced.has(path)) continue;
+      if (referenced.has(canon(path))) continue;
 
+      // inferWorktree also guards against a full clone parked here: it
+      // returns null for a main checkout, which must never be swept.
+      const info = inferWorktree(path);
+      if (!info) {
+        kept.push({ path, reason: "not a linked git worktree — inspect manually" });
+        continue;
+      }
       const status = git(path, "status", "--porcelain");
       if (!status.ok) {
-        out.push({ path, action: "keep", reason: "not a working git worktree — inspect manually" });
+        kept.push({ path, reason: "git status failed — inspect manually" });
         continue;
       }
       if (status.out !== "") {
-        out.push({ path, action: "keep", reason: "uncommitted changes" });
+        kept.push({ path, reason: "uncommitted changes" });
         continue;
       }
-      const common = git(path, "rev-parse", "--git-common-dir");
-      const repoRoot = common.ok ? dirname(resolve(path, common.out)) : undefined;
-      out.push({ path, action: "remove", reason: "clean — its branch stays in the repo", repoRoot });
+      remove.push({ path, repoRoot: info.repoRoot });
     }
   }
-  return out;
+  return { remove, kept };
 }
 
 export function planGc(opts: GcOptions): GcPlan {
-  const now = opts.now ?? Date.now();
+  const now = Date.now();
   const live = listAgents();
 
   // Reap = the session is gone (exited, killed, lost to a reboot) AND nothing
   // has touched the agent in a while. hasSession is the truth; the status
-  // field can be stale.
-  const agents = live.filter(
-    (a) => !hasSession(a.tmuxSession) && ageDays(a.updatedAt, now) > opts.agentDays,
-  );
+  // field can be stale. withWorktreeMeta backfills worktree metadata from git
+  // so the trash snapshot keeps enough to recreate the worktree on restore.
+  const agents = live
+    .filter((a) => ageDays(a.updatedAt, now) > opts.agentDays && !hasSession(a.tmuxSession))
+    .map((a) => withWorktreeMeta(a));
   const reaped = new Set(agents.map((a) => a.name));
   const surviving = live.filter((a) => !reaped.has(a.name));
 
   const allTrashed = listTrashed();
-  const trash = allTrashed.filter((t) => t.trashedAt && ageDays(t.trashedAt, now) > opts.trashDays);
+  const trash = allTrashed.filter((t) => ageDays(t.trashedAt, now) > opts.trashDays);
   const purged = new Set(trash.map((t) => t.name));
 
-  const liveNames = new Set(surviving.map((a) => a.name));
-  // Reaped agents land in trash this run, so their inboxes stay restorable.
-  const trashNames = new Set([
-    ...allTrashed.filter((t) => !purged.has(t.name)).map((t) => t.name),
-    ...reaped,
-  ]);
+  // What trash will hold after apply: current snapshots minus the purge, plus
+  // the agents reaped this run.
+  const restorable = [...allTrashed.filter((t) => !purged.has(t.name)), ...agents];
 
+  const liveNames = new Set(surviving.map((a) => a.name));
+  const restorableNames = new Set(restorable.map((r) => r.name));
+
+  // Worktrees referenced by a live agent are load-bearing; ones referenced by
+  // a restorable agent are kept too — `am rm` without --clean promises the
+  // worktree survives for restore, and gc honors that for the whole trash
+  // retention window.
   const referenced = new Set<string>();
-  for (const a of surviving) {
-    if (a.worktreePath) referenced.add(a.worktreePath);
-    referenced.add(a.dir);
+  const addRef = (p?: string) => {
+    if (p) referenced.add(canon(p));
+  };
+  for (const a of [...surviving, ...restorable]) {
+    addRef(a.worktreePath);
+    addRef(a.dir);
   }
 
+  const { remove, kept } = worktreeScan(referenced);
   return {
     agents,
     trash,
-    orphans: orphanScan(liveNames, trashNames, opts.trashDays, now),
-    worktrees: worktreeScan(referenced),
+    orphans: orphanScan(liveNames, restorableNames, opts.trashDays, now),
+    worktrees: remove,
+    keptWorktrees: kept,
   };
 }
 
@@ -185,35 +233,43 @@ export function gcIsEmpty(plan: GcPlan): boolean {
     plan.agents.length === 0 &&
     plan.trash.length === 0 &&
     plan.orphans.length === 0 &&
-    plan.worktrees.every((w) => w.action === "keep")
+    plan.worktrees.length === 0
   );
 }
 
-// Execute the plan. Order matters: agents first (their worktrees were already
-// treated as unreferenced by the plan), then files, then worktrees.
+// Execute the plan. Every destructive step revalidates against the world
+// having moved since planning. Order matters: the purge must precede the
+// reaps — a reaped agent may share a name with an old trash snapshot, and
+// its fresh snapshot has to survive.
 export function applyGc(plan: GcPlan): string[] {
   const lines: string[] = [];
 
-  for (const agent of plan.agents) {
-    destroyAgent(agent, { clean: false });
+  for (const t of plan.trash) {
+    removeTrashed(t.name);
+    lines.push(`purged trash snapshot "${t.name}" (removed ${t.trashedAt ?? "unknown"})`);
+  }
+
+  for (const planned of plan.agents) {
+    // Re-read: skip an agent that came back to life, and destroy from fresh
+    // state so the trash snapshot keeps fields written since planning.
+    const agent = readAgent(planned.name);
+    if (!agent) continue; // already gone
+    if (hasSession(agent.tmuxSession)) {
+      lines.push(`skipped "${agent.name}" — running again`);
+      continue;
+    }
+    destroyAgent(withWorktreeMeta(agent), { clean: false });
     lines.push(`reaped agent "${agent.name}" (restorable with \`am restore ${agent.name}\`)`);
   }
 
-  for (const t of plan.trash) {
-    removeTrashed(t.name);
-    lines.push(`purged trash snapshot "${t.name}" (removed ${t.trashedAt})`);
-  }
-
   for (const o of plan.orphans) {
+    if (o.owner && readAgent(o.owner)) continue; // owner (re)appeared since planning
     rmSync(o.path, { recursive: true, force: true });
     lines.push(`removed orphaned ${o.kind}: ${o.path}`);
   }
 
   for (const w of plan.worktrees) {
-    if (w.action !== "remove") continue;
-    const result = w.repoRoot
-      ? git(w.repoRoot, "worktree", "remove", w.path)
-      : { ok: false, out: "", err: "unknown repo root" };
+    const result = git(w.repoRoot, "worktree", "remove", w.path);
     if (result.ok) lines.push(`removed worktree ${w.path}`);
     else lines.push(`warning: could not remove worktree ${w.path}: ${result.err}`);
   }

@@ -180,3 +180,12 @@ export function queueClear(name: string): void {
   rmSync(legacyQueueFile(name), { force: true });
   rmSync(agentQueueDir(name), { recursive: true, force: true });
 }
+
+// The agent a top-level entry in queueDir belongs to: a message dir, the
+// legacy jsonl (with any claim suffix), or a deliver lock. Layout knowledge
+// stays in this module so gc's orphan scan can't drift from it.
+export function queueEntryOwner(entry: string, isDir: boolean): string | null {
+  if (isDir) return entry;
+  const m = /^(.+?)\.(jsonl(\..+)?|deliver\.lock)$/.exec(entry);
+  return m ? m[1]! : null;
+}

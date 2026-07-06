@@ -111,11 +111,11 @@ usage:
   am gc [--apply]             collect garbage: reap agents whose session is
                               gone and untouched >7d (to trash, restorable),
                               purge trash >30d, remove orphaned queue/inbox/
-                              snapshot files and clean unreferenced worktrees
-                              (dirty ones are kept and reported; committed
-                              work survives on its branch). Dry-run by
-                              default; --agent-days / --trash-days override
-                              the config retention
+                              snapshot files and clean worktrees unreferenced
+                              by any live or restorable agent (dirty ones are
+                              kept and reported; committed work survives on
+                              its branch). Dry-run by default; --agent-days /
+                              --trash-days override the config retention
   am watch                    live status table (via the daemon)
   am daemon [start|stop|status]
                               manage the background daemon (auto-started by am new)

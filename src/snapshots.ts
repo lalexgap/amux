@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureDirs, snapshotsDir } from "./paths";
 
@@ -23,4 +23,15 @@ export function readSnapshot(name: string): string[] | null {
 
 export function removeSnapshot(name: string): void {
   rmSync(snapshotFile(name), { force: true });
+}
+
+// Every stored snapshot with the agent name it belongs to — the name↔file
+// mapping stays in this module so gc can't drift from the layout.
+export function listSnapshots(): { name: string; path: string }[] {
+  if (!existsSync(snapshotsDir())) return [];
+  const out: { name: string; path: string }[] = [];
+  for (const f of readdirSync(snapshotsDir())) {
+    if (f.endsWith(".txt")) out.push({ name: f.slice(0, -4), path: join(snapshotsDir(), f) });
+  }
+  return out;
 }

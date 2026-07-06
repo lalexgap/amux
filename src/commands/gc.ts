@@ -21,7 +21,7 @@ function renderPlan(plan: GcPlan, agentDays: number, trashDays: number): string[
   if (plan.trash.length > 0) {
     lines.push(`trash snapshots >${trashDays}d — purge (no longer restorable):`);
     for (const t of plan.trash) {
-      lines.push(`  ${t.name.padEnd(16)} removed ${relativeTime(t.trashedAt)}`);
+      lines.push(`  ${t.name.padEnd(16)} removed ${t.trashedAt ? relativeTime(t.trashedAt) : "(unknown)"}`);
     }
   }
 
@@ -32,15 +32,9 @@ function renderPlan(plan: GcPlan, agentDays: number, trashDays: number): string[
     }
   }
 
-  const removable = plan.worktrees.filter((w) => w.action === "remove");
-  const kept = plan.worktrees.filter((w) => w.action === "keep");
-  if (removable.length > 0) {
-    lines.push("unreferenced worktrees — remove:");
-    for (const w of removable) lines.push(`  ${shortenHome(w.path)} (${w.reason})`);
-  }
-  if (kept.length > 0) {
-    lines.push("unreferenced worktrees — kept:");
-    for (const w of kept) lines.push(`  ${shortenHome(w.path)} — ${w.reason}`);
+  if (plan.worktrees.length > 0) {
+    lines.push("unreferenced clean worktrees — remove (their branches stay in the repo):");
+    for (const w of plan.worktrees) lines.push(`  ${shortenHome(w.path)}`);
   }
 
   return lines;
@@ -52,22 +46,21 @@ export function gcCommand(opts: GcCommandOptions): void {
   const trashDays = opts.trashDays ?? config.gcTrashDays;
   const plan = planGc({ agentDays, trashDays });
 
+  // Unreferenced worktrees gc refuses to touch (dirty, not a linked worktree)
+  // are worth surfacing on every path — they're what gc deliberately keeps.
+  const keptLines = plan.keptWorktrees.map((w) => `kept ${shortenHome(w.path)} — ${w.reason}`);
+
   if (gcIsEmpty(plan)) {
-    // Dirty/broken worktrees are worth a mention even when nothing is
-    // collectable — they are the things gc deliberately won't touch.
-    const kept = plan.worktrees.filter((w) => w.action === "keep");
-    for (const w of kept) console.log(`kept ${shortenHome(w.path)} — ${w.reason}`);
+    for (const line of keptLines) console.log(line);
     console.log("nothing to collect");
     return;
   }
 
-  if (!opts.apply) {
+  if (opts.apply) {
+    for (const line of applyGc(plan)) console.log(line);
+  } else {
     console.log("gc plan (dry run — execute with `am gc --apply`):");
     for (const line of renderPlan(plan, agentDays, trashDays)) console.log(line);
-    return;
   }
-
-  for (const line of applyGc(plan)) console.log(line);
-  const kept = plan.worktrees.filter((w) => w.action === "keep");
-  for (const w of kept) console.log(`kept ${shortenHome(w.path)} — ${w.reason}`);
+  for (const line of keptLines) console.log(line);
 }
