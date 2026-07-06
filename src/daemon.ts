@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { daemonPidFile, daemonSocket, ensureDirs } from "./paths";
+import { closeSync, existsSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { DAEMON_LOG_MAX_BYTES, daemonLogFile, daemonPidFile, daemonSocket, ensureDirs } from "./paths";
 import { listAgents, readAgent, setStatus } from "./state";
 import { queueAppend, queueDepth } from "./queue";
-import { hasSession } from "./tmux";
+import { hasSession, sessionName } from "./tmux";
+import { openLogFd } from "./fsutil";
 import { deliverNext } from "./deliver";
 import { agentRows } from "./commands/ls";
 import { cliEntrypoint } from "./settings";
@@ -14,6 +15,12 @@ import { newMsgId } from "./msgid";
 
 export const DELIVERY_DELAY_MS = 500;
 const RECONCILE_INTERVAL_MS = 15_000;
+
+// The daemon's stdout/stderr are redirected to daemonLogFile() by ensureDaemon,
+// so these lines are what you find when cross-machine mail stops flowing.
+function log(message: string): void {
+  console.error(`[${new Date().toISOString()}] ${message}`);
+}
 
 // Adaptive poll backoff: snap to the hot floor when mail just arrived, else
 // grow ×1.5 toward the idle cap. Pure for testing.
@@ -35,13 +42,17 @@ export function nextPollMs(current: number, hotMs: number, maxMs: number, collec
 // from double-delivering the entries that did get through. [fixes review M1]
 async function injectCollected(entry: OutboxEntry, host: string): Promise<boolean> {
   const target = readAgent(entry.to);
-  if (!target) return true; // name no longer local — nothing we can do here; let it go
+  // No readable state for this name. If a live managed session still exists,
+  // the state is merely damaged (quarantined), not gone — defer (no ack)
+  // rather than eat mail addressed to a running agent; the remote's TTL
+  // bounces it observably if the state never comes back.
+  if (!target) return !hasSession(sessionName(entry.to));
   if (entry.msgId && seenRecently(entry.msgId)) return true; // already delivered — dedup
   const sender = collectedSender(entry.from, entry.fromHost, host);
   const att = attribute(sender, entry.to, entry.body, "send", entry.msgId);
   if (!att.allowed) {
     // loop guard tripped — defer (don't ack) so it's retried, not lost
-    console.error(`outbox: rate-limited collected message from ${sender} to ${entry.to} (deferred for retry)`);
+    log(`outbox: rate-limited collected message from ${sender} to ${entry.to} (deferred for retry)`);
     return false;
   }
   queueAppend(entry.to, att.body);
@@ -49,7 +60,7 @@ async function injectCollected(entry: OutboxEntry, host: string): Promise<boolea
     try {
       await deliverNext(entry.to);
     } catch (error) {
-      console.error(`outbox delivery to ${entry.to} failed:`, error);
+      log(`outbox delivery to ${entry.to} failed: ${error}`);
     }
   }
   return true;
@@ -108,7 +119,7 @@ async function collectFromRemotes(): Promise<number> {
       try {
         total += await collectFromHost(host, localNames);
       } catch (error) {
-        console.error(`outbox collect from ${host} failed:`, error);
+        log(`outbox collect from ${host} failed: ${error}`);
       }
     }
   } finally {
@@ -145,11 +156,9 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
         if (!agent || !event) return new Response("agent and event required", { status: 400 });
         if (event === "stop" && queueDepth(agent) > 0) {
           setTimeout(() => {
-            try {
-              void deliverNext(agent);
-            } catch (error) {
-              console.error(`delivery to ${agent} failed:`, error);
-            }
+            // .catch, not try/catch: deliverNext is async, so a try around a
+            // `void` call could never see its failures.
+            deliverNext(agent).catch((error) => log(`delivery to ${agent} failed: ${error}`));
           }, DELIVERY_DELAY_MS);
         }
         return Response.json({ ok: true });
@@ -163,17 +172,25 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
   // stranded while an agent was idle (e.g. a send racing a status change):
   // an idle agent fires no Stop hook, so nothing else would drain them.
   const reconciler = setInterval(() => {
+    // Bound the log during a long run — rotation at spawn can't help a daemon
+    // that stays up for weeks. Truncate in place: the inherited append fd
+    // keeps writing at the (new) end, whereas a rename would divorce the fd
+    // from the path.
+    try {
+      if (statSync(daemonLogFile()).size > DAEMON_LOG_MAX_BYTES) {
+        truncateSync(daemonLogFile(), 0);
+        log("log truncated (size cap)");
+      }
+    } catch {
+      // no log yet
+    }
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
         setStatus(agent.name, "exited");
         continue;
       }
       if (agent.status === "idle" && queueDepth(agent.name) > 0) {
-        try {
-          void deliverNext(agent.name);
-        } catch (error) {
-          console.error(`delivery to ${agent.name} failed:`, error);
-        }
+        deliverNext(agent.name).catch((error) => log(`delivery to ${agent.name} failed: ${error}`));
       }
     }
   }, RECONCILE_INTERVAL_MS);
@@ -198,7 +215,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
       try {
         collected = await collectFromRemotes();
       } catch (error) {
-        console.error("outbox collect failed:", error);
+        log(`outbox collect failed: ${error}`);
       }
       pollMs = nextPollMs(pollMs, hotMs, maxMs, collected);
       if (!stopped) scheduleCollect();
@@ -260,18 +277,30 @@ export function runForegroundDaemon(): void {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-  console.log(`am daemon listening on ${daemonSocket()} (pid ${process.pid})`);
+  log(`am daemon listening on ${daemonSocket()} (pid ${process.pid})`);
 }
 
 export async function ensureDaemon(): Promise<boolean> {
   if (await daemonHealth()) return true;
-  Bun.spawn({
-    cmd: [process.execPath, cliEntrypoint(), "__daemon"],
-    env: { ...process.env },
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  }).unref();
+  let out: number | "ignore" = "ignore";
+  try {
+    out = openLogFd(daemonLogFile(), DAEMON_LOG_MAX_BYTES);
+  } catch {
+    // can't open a log file — run the daemon silent rather than not at all
+  }
+  try {
+    Bun.spawn({
+      cmd: [process.execPath, cliEntrypoint(), "__daemon"],
+      env: { ...process.env },
+      stdin: "ignore",
+      stdout: out,
+      stderr: out,
+    }).unref();
+  } finally {
+    // The child holds its own copy — close ours so repeated failed starts
+    // from a long-lived caller (hub, watch) don't leak an fd per attempt.
+    if (typeof out === "number") closeSync(out);
+  }
   // Give it a moment to bind the socket.
   for (let i = 0; i < 20; i++) {
     await Bun.sleep(100);

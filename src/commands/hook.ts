@@ -89,14 +89,20 @@ export function shortTask(task: string | undefined, max = 72): string {
   return firstLine.length > max ? firstLine.slice(0, max - 1) + "…" : firstLine;
 }
 
-// The context block shown to the agent for its pending peer messages. Pure.
+// The queue holds both peer messages (envelope-wrapped by attribute()) and
+// plain operator sends (no envelope) — the framing must not claim everything
+// is from "other agents", or the operator's own instructions get read with
+// colleague-note authority.
+const SENDER_KEY = `Messages prefixed "[am · from X]" are from peer agent X; messages without that prefix are from your operator.`;
+
+// The context block shown to the agent for its pending messages. Pure.
 export function formatInbox(messages: string[]): string {
   const n = messages.length;
   const header =
     n === 1
-      ? "You have 1 message from another agent (it arrived while you were busy):"
-      : `You have ${n} messages from other agents (they arrived while you were busy):`;
-  return `[am inbox] ${header}\n\n${messages.join("\n")}\n\nAddress or act on these as appropriate, then continue.`;
+      ? "You have 1 message (it arrived while you were busy):"
+      : `You have ${n} messages (they arrived while you were busy):`;
+  return `[am inbox] ${header}\n\n${messages.join("\n")}\n\n${SENDER_KEY} Address or act on these as appropriate, then continue.`;
 }
 
 // We surface the inbox on UserPromptSubmit (turn start) AND PostToolUse (between
@@ -120,9 +126,9 @@ export function buildStopGate(messages: string[]): string | null {
   if (messages.length === 0) return null;
   const n = messages.length;
   const reason =
-    `[am inbox] Before you finish: you have ${n} message${n === 1 ? "" : "s"} from ` +
-    `${n === 1 ? "another agent" : "other agents"} to handle first.\n\n${messages.join("\n")}\n\n` +
-    `Respond or act on these, then you can stop.`;
+    `[am inbox] Before you finish: you have ${n} message${n === 1 ? "" : "s"} to handle first ` +
+    `(arrived while you were busy).\n\n${messages.join("\n")}\n\n` +
+    `${SENDER_KEY} Respond or act on these, then you can stop.`;
   return JSON.stringify({ decision: "block", reason });
 }
 
