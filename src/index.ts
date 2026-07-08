@@ -15,6 +15,8 @@ import { queueCommand } from "./commands/queue";
 import { destroyAgent, rmCommand, stopAgent } from "./commands/rm";
 import { restoreCommand } from "./commands/restore";
 import { gcCommand } from "./commands/gc";
+import { waitCommand } from "./commands/wait";
+import { peekCommand } from "./commands/peek";
 import { jumpCommand, jumpPreviousCommand } from "./commands/jump";
 import { hookCommand } from "./commands/hook";
 import { resumeCommand, reviveAgent } from "./commands/resume";
@@ -83,6 +85,14 @@ usage:
   am interrupt <name> <msg>   abort current turn (Esc), then send message
                               (sends from inside an agent are auto-attributed:
                                the recipient sees "[am · from <you>] …")
+  am wait <name> [--status s] [--timeout secs] [--quiet]
+                              block until the agent's turn ends, then print
+                              its final message (pairs with send:
+                              \`am send x "..." && am wait x\`); --status waits
+                              for a given status instead; exit 1 on
+                              blocked/exited/timeout
+  am peek <name> [--lines n]  print the agent's screen without attaching
+                              (last snapshot when the session is gone)
   am report <name> --to <t>   make <name> report progress to <t> (--clear drops
                               it; bare \`am report <name>\` shows the relationship)
   am comms <name>             recent messages to/from an agent
@@ -149,7 +159,7 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
-const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days"]);
+const VALUE_FLAGS = new Set(["m", "message", "dir", "worktree", "model", "effort", "to", "out", "host", "H", "port", "bind", "from", "report-to", "file", "timeout", "ssh-port", "limit", "agent-days", "trash-days", "status", "lines"]);
 const OPTIONAL_VALUE_FLAGS = new Set(["resume"]);
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -220,7 +230,7 @@ async function resolveMessage(args: ParsedArgs): Promise<string> {
 // `am send demo "..."` works no matter which machine demo lives on.
 const AGENT_COMMANDS = new Set([
   "j", "jump", "send", "interrupt", "int", "queue", "q", "stop", "rm", "resume", "transcript", "handoff", "cd",
-  "report", "comms",
+  "report", "comms", "wait", "peek",
 ]);
 
 // Attributed sends keep their sender across an ssh hop: AGENTMGR_AGENT doesn't
@@ -484,6 +494,16 @@ async function main(): Promise<void> {
       break;
     case "comms":
       commsCommand(requirePositional(args, 0, "agent name"));
+      break;
+    case "wait":
+      await waitCommand(requirePositional(args, 0, "agent name"), {
+        status: args.flags.status as string | undefined,
+        timeoutSec: numberFlag(args, "timeout"),
+        quiet: !!args.flags.quiet,
+      });
+      break;
+    case "peek":
+      peekCommand(requirePositional(args, 0, "agent name"), { lines: numberFlag(args, "lines") });
       break;
     case "outbox":
       outboxCommand({ clear: !!args.flags.clear });
