@@ -89,10 +89,12 @@ usage:
                               block until the agent's turn ends, then print
                               its final message (pairs with send:
                               \`am send x "..." && am wait x\`); --status waits
-                              for a given status instead; exit 1 on
+                              for a given display status instead (sampled
+                              twice a second — a state that flashes between
+                              polls can be missed); exit 1 on
                               blocked/exited/timeout
-  am peek <name> [--lines n]  print the agent's screen without attaching
-                              (last snapshot when the session is gone)
+  am peek <name> [--lines n]  print the agent's screen (last n lines) without
+                              attaching; dead agents show their last snapshot
   am report <name> --to <t>   make <name> report progress to <t> (--clear drops
                               it; bare \`am report <name>\` shows the relationship)
   am comms <name>             recent messages to/from an agent
@@ -248,6 +250,20 @@ function injectSender(command: string | undefined, argv: string[]): string[] {
   return [...argv, "--from", `${alias}:${sender}`];
 }
 
+// Swap the target ref for its resolved remote name — but only the FIRST
+// occurrence after the command word. A later argv element that happens to
+// equal the prefix (a message word, a --status value) must pass through.
+function remapRef(argv: string[], ref: string, name: string): string[] {
+  let replaced = false;
+  return argv.map((a, i) => {
+    if (i > 0 && !replaced && a === ref) {
+      replaced = true;
+      return name;
+    }
+    return a;
+  });
+}
+
 function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv: string[]): void {
   if (!command || !AGENT_COMMANDS.has(command)) return;
   // A file send routes itself: the file is local, so it scp's the bytes and
@@ -261,7 +277,7 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
   if (explicitHost && explicitName) {
     const known = loadConfig().remotes ?? [];
     if (known.includes(explicitHost)) {
-      remoteExec(explicitHost, injectSender(command, argv.map((a) => (a === ref ? explicitName : a))));
+      remoteExec(explicitHost, injectSender(command, remapRef(argv, ref, explicitName)));
     }
     return; // colon but unknown host — let local resolution complain
   }
@@ -274,7 +290,7 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
   const prefix = remoteRows.filter((r) => r.name.startsWith(ref));
   const match = exact.length === 1 ? exact[0] : prefix.length === 1 ? prefix[0] : null;
   if (match?.host) {
-    remoteExec(match.host, injectSender(command, argv.map((a) => (a === ref ? match.name : a))));
+    remoteExec(match.host, injectSender(command, remapRef(argv, ref, match.name)));
   }
   if (prefix.length > 1) {
     throw new Error(
