@@ -1,7 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { configFile } from "./paths";
+import type { Provider } from "./state";
 
 export interface Config {
+  // Provider a new agent runs on when neither --codex nor --claude is given
+  // (and, in the create form, the preselected provider). "claude" or "codex".
+  defaultProvider: Provider;
   // Notify when an agent goes idle (in addition to the always-on
   // needs-attention notifications).
   notifyOnIdle: boolean;
@@ -70,6 +74,7 @@ export interface Config {
 }
 
 const DEFAULTS: Config = {
+  defaultProvider: "claude",
   notifyOnIdle: true,
   idleNotifyMinSeconds: 30,
   remoteControl: true,
