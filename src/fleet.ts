@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { agentRows, relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS, type AgentRow } from "./commands/ls";
+import { agentRows, cachedGitDiffSummary, relativeTime, shortenHome, STATUS_COLORS, STATUS_ICONS, type AgentRow } from "./commands/ls";
 import { loadConfig } from "./config";
 import { sshAm, sshAmAsync, sshRun } from "./remote";
 import { splitAddr } from "./comms";
@@ -186,40 +186,100 @@ export function sectionFor(row: FleetRow, mode: GroupMode): string {
   return row.host ?? "local";
 }
 
+const STATUS_PRIORITY: Record<AgentRow["status"], number> = {
+  "needs-attention": 0,
+  working: 1,
+  waiting: 2,
+  starting: 3,
+  idle: 4,
+  exited: 5,
+  dead: 6,
+};
+
+export function sortFleetRows(rows: FleetRow[], mode: GroupMode): FleetRow[] {
+  const sectionOrder = new Map<string, number>();
+  if (mode === "host") {
+    for (const row of rows) {
+      const section = sectionFor(row, mode);
+      if (!sectionOrder.has(section)) sectionOrder.set(section, sectionOrder.size);
+    }
+  }
+  return [...rows].sort((a, b) => {
+    const sectionA = sectionFor(a, mode);
+    const sectionB = sectionFor(b, mode);
+    const sectionCmp = mode === "dir"
+      ? sectionA.localeCompare(sectionB)
+      : (sectionOrder.get(sectionA) ?? 0) - (sectionOrder.get(sectionB) ?? 0);
+    return sectionCmp || STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] || a.name.localeCompare(b.name);
+  });
+}
+
+const FG = "\x1b[38;2;169;177;214m";
+const GREEN = "\x1b[38;2;158;206;106m";
+const RED = "\x1b[38;2;247;118;142m";
+const AMBER = "\x1b[38;2;224;175;104m";
+const MUTED = "\x1b[38;2;86;95;137m";
+const CLAUDE = "\x1b[38;2;187;154;247m\x1b[48;2;42;36;64m";
+const CODEX = "\x1b[38;2;122;162;247m\x1b[48;2;31;35;53m";
+
+function compactAge(iso: string): string {
+  return relativeTime(iso).replace(/ ago$/, "");
+}
+
+function activityFor(row: FleetRow): string {
+  if (row.status === "needs-attention") return "needs you";
+  const age = compactAge(row.updatedAt);
+  return row.status === "idle" ? `idle ${age}` : age;
+}
+
+function detailStatus(status: AgentRow["status"]): string {
+  if (status === "needs-attention") return "needs you";
+  if (status === "working" || status === "starting") return "running";
+  return status;
+}
+
+function diffDetail(row: FleetRow): string {
+  if (!row.diff) return !row.host && (row.repoRoot || row.worktreeBranch) ? `${MUTED}checking…${FG}` : "—";
+  if (!row.diff.dirty) return `${GREEN}clean${FG}`;
+  const files = `${row.diff.files} ${row.diff.files === 1 ? "file" : "files"}`;
+  return `${GREEN}+${row.diff.added}${FG} ${RED}−${row.diff.removed}${FG} · ${files} · uncommitted`;
+}
+
 // Shared list builder for the classic picker and the hub sidebar: one item
 // per agent across the whole fleet, keyed host:name for remote rows.
 export function fleetPickerItems(): PickerItem[] {
   const { rows, unreachable } = cachedFleetRows();
-  // Groups must be contiguous for the picker's section headers; host mode is
-  // naturally ordered (local rows come first), dir mode needs the sort.
-  const sorted = groupMode === "dir" ? [...rows].sort((a, b) => sectionFor(a, "dir").localeCompare(sectionFor(b, "dir"))) : rows;
-  const items = sorted.map((r) => {
-    const hostBadge = r.host ? `@${shortHost(r.host)}` : "";
-    // The colored glyph carries the status, so the badge drops the redundant
-    // status word and keeps only host/provider/queue. Queue stands out: a
-    // compact ▸N, yellow when backed up.
-    const queueBadge = r.queued > 0 ? `▸${r.queued}` : "";
+  // Diff collection belongs to the interactive fleet UI, not `am ls`: start
+  // it only for visible local sessions and consume the non-blocking cache.
+  const withDiff = rows.map((row) =>
+    !row.host && row.status !== "exited" && (row.repoRoot || row.worktreeBranch)
+      ? { ...row, diff: cachedGitDiffSummary(row.dir) }
+      : row,
+  );
+  const sorted = sortFleetRows(withDiff, groupMode);
+  const items: PickerItem[] = sorted.map((r) => {
     return {
       name: fleetKey(r),
       section: sectionFor(r, groupMode),
       secondary: r.status === "exited",
       icon: STATUS_ICONS[r.status],
       iconStyle: STATUS_COLORS[r.status],
+      status: r.status,
+      statusLabel: detailStatus(r.status),
       label: r.name,
-      right: [hostBadge, r.provider === "codex" ? "codex" : "", queueBadge].filter(Boolean).join(" "),
-      rightStyle: r.queued > 0 ? "\x1b[33m" : "\x1b[2m", // yellow when queued, else dim
+      labelStyle: r.status === "needs-attention" ? AMBER : r.status === "idle" ? MUTED : FG,
+      right: activityFor(r),
+      rightStyle: r.status === "needs-attention" ? AMBER : MUTED,
+      badge: r.provider === "codex" ? "cdx" : "cld",
+      badgeStyle: r.provider === "codex" ? CODEX : CLAUDE,
+      queueDepth: r.queued,
       search: `${r.task ?? ""} ${shortenHome(r.dir)} ${r.provider} ${r.host ?? "local"}`,
       meta: [
-        `status   ${r.status}${r.statusDetail ? ` — ${r.statusDetail}` : ""}${r.queued > 0 ? ` (${r.queued} queued)` : ""}`,
         `host     ${r.host ?? "local"}`,
         `provider ${r.provider}`,
-        `dir      ${shortenHome(r.dir)}`,
-        ...(r.worktreeBranch ? [`branch   ${r.worktreeBranch}`] : []),
-        ...(r.spawnedBy ? [`parent   ${r.spawnedBy}`] : []),
-        ...(r.reportTo ? [`reports  → ${r.reportTo}`] : []),
-        ...(r.task ? [`task     ${r.task}`] : []),
-        `updated  ${relativeTime(r.updatedAt)}`,
-        ...(r.createdAt ? [`created  ${relativeTime(r.createdAt)}`] : []),
+        r.worktreeBranch ? `branch   ${r.worktreeBranch}` : `dir      ${shortenHome(r.dir)}`,
+        `diff     ${diffDetail(r)}`,
+        `updated  ${relativeTime(r.updatedAt)}${r.createdAt ? ` · created ${relativeTime(r.createdAt)}` : ""}`,
       ],
     };
   });
@@ -229,12 +289,14 @@ export function fleetPickerItems(): PickerItem[] {
       section: host,
       secondary: false,
       icon: "✕",
-      iconStyle: "\x1b[31;2m", // dim red
+      iconStyle: STATUS_COLORS.dead,
+      status: "dead",
+      statusLabel: "unreachable",
       label: `(${shortHost(host)} unreachable)`,
       right: "",
-      rightStyle: "\x1b[2m",
+      rightStyle: MUTED,
       search: host,
-      meta: [`host     ${host}`, `status   unreachable`],
+      meta: [`host     ${host}`, "provider —", "dir      —", "diff     —", "updated  —"],
     });
   }
   return items;

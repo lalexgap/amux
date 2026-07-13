@@ -11,9 +11,9 @@ import {
   wrapTokens,
 } from "../src/picker";
 
-const GREEN = "\x1b[32m";
-const YELLOW_C = "\x1b[33m";
-const RED_C = "\x1b[31m";
+const GREEN = "\x1b[38;2;158;206;106m";
+const YELLOW_C = "\x1b[38;2;224;175;104m";
+const RED_C = "\x1b[38;2;247;118;142m";
 
 const RED = "\x1b[31m";
 const BG = "\x1b[48;5;236m";

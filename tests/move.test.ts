@@ -9,7 +9,7 @@ import {
   parseMoveSpec,
   targetTranscriptPath,
 } from "../src/commands/move";
-import { fleetKey, splitFleetKey, shortHost } from "../src/fleet";
+import { fleetKey, sortFleetRows, splitFleetKey, shortHost } from "../src/fleet";
 import { readAgent, type AgentState } from "../src/state";
 import { queueList } from "../src/queue";
 
@@ -187,6 +187,24 @@ describe("sectionFor", () => {
     // same project, different machine/home/symlink spellings → one section
     expect(sectionFor(row({ dir: "/Users/u/code/app" }) as never, "dir")).toBe("app");
     expect(sectionFor(row({ dir: "/mnt/fastdata/code/app" }) as never, "dir")).toBe("app");
+  });
+});
+
+describe("sortFleetRows", () => {
+  test("keeps sections together and puts attention before active before idle", () => {
+    const base = { provider: "claude", queued: 0, updatedAt: "", dir: "/tmp/app" } as const;
+    const rows = [
+      { ...base, name: "idle-local", status: "idle" },
+      { ...base, name: "needs-local", status: "needs-attention" },
+      { ...base, name: "gone-remote", status: "exited", host: "home.example" },
+      { ...base, name: "active-remote", status: "working", host: "home.example" },
+    ];
+    expect(sortFleetRows(rows as never, "host").map((row) => row.name)).toEqual([
+      "needs-local",
+      "idle-local",
+      "active-remote",
+      "gone-remote",
+    ]);
   });
 });
 

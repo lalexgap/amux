@@ -9,8 +9,16 @@ export interface PickerItem {
   // colors, so the glyph there renders plain.
   icon?: string;
   iconStyle?: string;
-  // Right-aligned text at the row's end (host, provider, queue depth), with an
-  // optional color applied on non-highlighted rows.
+  // Display status powers the header rollup and the selected item's detail
+  // card. It stays a string so the picker remains independent of AgentState.
+  status?: string;
+  statusLabel?: string;
+  // Row styling is split into the activity column and compact provider chip.
+  labelStyle?: string;
+  badge?: string;
+  badgeStyle?: string;
+  queueDepth?: number;
+  // Right-aligned activity text, with an optional color on unselected rows.
   right?: string;
   rightStyle?: string;
   // Extra text the filter matches against (task, dir) besides the name.
@@ -99,8 +107,10 @@ export interface PickerHandlers {
   // Provider preselected in the create form (config's defaultProvider). Falls
   // back to the first PROVIDER_OPTIONS entry when unset or unrecognized.
   defaultProvider?: string;
+  // Used only for the create card's consequence preview.
+  worktreeByDefault?: boolean;
   // The create flow opens a full-screen form. The sidebar paints only its own
-  // ~38-col pane, so the hub zooms that pane (tmux resize-pane -Z) while the
+  // ~44-col pane, so the hub zooms that pane (tmux resize-pane -Z) while the
   // form is up and un-zooms when it closes. Called with true on open, false on
   // close (create success, cancel/esc, ctrl-c). `am pick` is already
   // fullscreen, so it leaves this unset (no-op).
@@ -226,19 +236,47 @@ const CLEAR_LINE = "\x1b[2K";
 // a wrap scrolls the screen and the whole layout jumps.
 const WRAP_OFF = "\x1b[?7l";
 const WRAP_ON = "\x1b[?7h";
-const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
-const INVERSE = "\x1b[7m";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const RED = "\x1b[31m";
+const BOLD = "\x1b[1m";
+const NORMAL_WEIGHT = "\x1b[22m";
+const fg = (hex: string) => {
+  const [r, g, b] = hex.match(/[0-9a-f]{2}/gi)!.map((v) => parseInt(v, 16));
+  return `\x1b[38;2;${r};${g};${b}m`;
+};
+const bg = (hex: string) => {
+  const [r, g, b] = hex.match(/[0-9a-f]{2}/gi)!.map((v) => parseInt(v, 16));
+  return `\x1b[48;2;${r};${g};${b}m`;
+};
+
+export const THEME = {
+  app: bg("1a1b26") + fg("a9b1d6"),
+  sidebar: bg("16161e") + fg("a9b1d6"),
+  card: bg("1f2335") + fg("a9b1d6"),
+  selected: bg("283457") + fg("c0caf5"),
+  keycap: bg("24283b") + fg("c0caf5"),
+  text: fg("a9b1d6"),
+  bright: fg("c0caf5"),
+  muted: fg("565f89"),
+  faint: fg("414868"),
+  border: fg("2a2c3d"),
+  blue: fg("7aa2f7"),
+  cyan: fg("7dcfff"),
+  green: fg("9ece6a"),
+  yellow: fg("e0af68"),
+  red: fg("f7768e"),
+  purple: fg("bb9af7"),
+  orange: fg("ff9e64"),
+} as const;
+
+const DIM = THEME.muted;
+const GREEN = THEME.green;
+const YELLOW = THEME.yellow;
+const RED = THEME.red;
 
 const FB_GLYPH: Record<FeedbackLevel, string> = { info: "", ok: "✓", warn: "⚠", error: "✕" };
 const FB_COLOR: Record<FeedbackLevel, string> = { info: DIM, ok: GREEN, warn: YELLOW, error: RED };
 // Errors carry detail (ssh stderr) worth more room than a routine toast.
 const ERROR_FEEDBACK_LINES = 10;
-
-const HELP = "click/enter jumps (ctrl-q returns) · wheel/↑/↓/j/k moves · f filter · g group · a all · n new · e edit… · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -297,6 +335,19 @@ interface Cell {
   style?: string;
 }
 
+function padAnsi(text: string, width: number): string {
+  const clipped = visibleWidth(text) > width ? clipAnsi(text, width) : text;
+  return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+}
+
+function alignAnsi(left: string, right: string, width: number): string {
+  const gap = width - visibleWidth(left) - visibleWidth(right);
+  if (gap >= 1) return left + " ".repeat(gap) + right;
+  const rightWidth = Math.min(width, visibleWidth(right));
+  if (rightWidth >= width) return padAnsi(right, width);
+  return padAnsi(left, width - rightWidth - 1) + " " + padAnsi(right, rightWidth);
+}
+
 // The colored banner shown under the header for an action's result. Control
 // bytes from ssh stderr are stripped, the severity glyph leads the first line,
 // continuations are indented to align under the text. Errors get more lines.
@@ -309,7 +360,76 @@ export function feedbackBanner(fb: FeedbackResult, width: number): Cell[] {
   return wrapped.map((line, i) => ({ text: (i === 0 ? glyph : indent) + line, style: FB_COLOR[fb.level] }));
 }
 
-type Mode = "list" | "filter" | "search" | "new-form" | "cd-dir" | "edit";
+type Mode = "list" | "filter" | "search" | "new-form" | "cd-dir" | "edit" | "help";
+
+interface KeyHint {
+  key: string;
+  label: string;
+}
+
+function keyBar(mode: Mode, handlers: PickerHandlers, width: number, active = true): Cell[] {
+  let label = mode === "new-form" ? "CREATE" : mode.toUpperCase().replace("-DIR", "");
+  let hints: KeyHint[];
+  if (!active) {
+    label = "AGENT";
+    hints = [{ key: "ctrl-q", label: "sidebar" }];
+  } else if (mode === "new-form") {
+    hints = [
+      { key: "↑↓", label: "field" },
+      { key: "←→", label: "option" },
+      { key: "tab", label: "complete" },
+      { key: "⏎", label: "create" },
+      { key: "esc", label: "cancel" },
+    ];
+  } else if (mode === "edit") {
+    hints = [
+      ...(handlers.move ? [{ key: "m", label: "move" }] : []),
+      ...(handlers.clone ? [{ key: "c", label: "clone" }] : []),
+      ...(handlers.handoff ? [{ key: "h", label: "handoff" }] : []),
+      ...(handlers.cd ? [{ key: "r", label: "cd" }] : []),
+      ...(handlers.stop ? [{ key: "x", label: "stop" }] : []),
+      ...(handlers.remove ? [{ key: "d", label: "remove" }] : []),
+      { key: "esc", label: "back" },
+    ];
+  } else if (mode === "filter" || mode === "search" || mode === "cd-dir") {
+    hints = [
+      { key: "⏎", label: mode === "cd-dir" ? "move" : "apply" },
+      ...(mode === "cd-dir" ? [] : [{ key: "↑↓", label: "preview" }]),
+      { key: "esc", label: "cancel" },
+    ];
+  } else if (mode === "help") {
+    hints = [{ key: "? / esc", label: "close" }];
+  } else {
+    hints = [
+      { key: "↑↓", label: "preview" },
+      { key: "⏎", label: handlers.select ? "lock in" : "jump" },
+      ...(handlers.create ? [{ key: "n", label: "new" }] : []),
+      { key: "f", label: "filter" },
+      ...(handlers.regroup ? [{ key: "g", label: "group" }] : []),
+      ...(hasEditActions(handlers) ? [{ key: "e", label: "edit" }] : []),
+      { key: "?", label: "keys" },
+    ];
+    label = "SIDEBAR";
+  }
+
+  const prefix = `${THEME.blue}${BOLD}${label}${NORMAL_WEIGHT}${THEME.sidebar}`;
+  const tokens = hints.map(({ key, label: hintLabel }) =>
+    `${THEME.keycap} ${key} ${THEME.sidebar}${THEME.muted}${hintLabel}${THEME.sidebar}`,
+  );
+  const lines: string[] = [];
+  let line = prefix;
+  for (const token of tokens) {
+    const candidate = `${line}  ${token}`;
+    if (visibleWidth(line) > 0 && visibleWidth(candidate) > width) {
+      lines.push(line);
+      line = token;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.map((text) => ({ text, style: THEME.sidebar }));
+}
 
 export function hasEditActions(handlers: PickerHandlers): boolean {
   return !!(handlers.move || handlers.clone || handlers.handoff || handlers.cd || handlers.stop || handlers.remove);
@@ -464,98 +584,133 @@ export async function pick(
     }
   };
 
-  // The full-screen create form. Shows every field at once with a focus ring,
-  // rendered across the whole (zoomed) pane rather than the list's narrow
-  // column. Returns the screen as an array of rows.
+  // The zoomed create flow is a centered, framed card. Every field stays
+  // visible, the focused row gets the same blue rail/tint as the agent list,
+  // and the bottom sentence previews what Enter will do.
   const renderForm = (cols: number, rows: number): string[] => {
     formHitRows.clear();
     const labels: Record<string, string> = {
-      name: "Name",
-      task: "Task (optional)",
-      dir: "Dir",
-      provider: "Provider",
-      model: "Model (optional)",
-      effort: "Effort (optional)",
-      where: "Where",
+      name: "name",
+      task: "task",
+      dir: "dir",
+      provider: "provider",
+      model: "model",
+      effort: "effort",
+      where: "where",
     };
-    const labelW = 18;
-    const margin = "  ";
-
-    // The Where/Provider/Effort fields render as an arrow-cycled option strip,
-    // highlighting the selection (inverse when focused, [bracketed] otherwise).
-    const optionStrip = (options: string[], selected: number, focused: boolean): string =>
+    const cardWidth = Math.max(1, Math.min(84, cols - 4));
+    const innerWidth = Math.max(1, cardWidth - 2);
+    const labelW = 12;
+    interface FormLine { text: string; field?: number }
+    const card: FormLine[] = [];
+    const border = (edge: string) => `${THEME.border}${edge}${THEME.app}`;
+    const content = (value: string, base = THEME.card): string =>
+      `${THEME.border}│${base}${padAnsi(value, innerWidth)}${THEME.border}│${THEME.app}`;
+    const rule = () => card.push({ text: border(`├${"─".repeat(innerWidth)}┤`) });
+    const chip = (text: string, style: string, rowBase: string): string =>
+      `${style} ${text} ${rowBase}`;
+    const optionStrip = (options: string[], selected: number, rowBase: string, kind: string): string =>
       options
-        .map((o, oi) => (oi === selected ? (focused ? `${INVERSE} ${o} ${RESET}` : `[${o}]`) : ` ${o} `))
+        .map((o, oi) => {
+          if (oi !== selected) return `${THEME.muted} ${o} ${rowBase}`;
+          const selectedStyle = kind === "provider"
+            ? o === "claude"
+              ? bg("2a2440") + THEME.purple
+              : bg("1f2335") + THEME.blue
+            : bg("283457") + THEME.bright;
+          return chip(o, selectedStyle, rowBase);
+        })
         .join(" ");
 
-    const fieldRow = (field: string, i: number): string => {
+    const fieldRow = (field: string, i: number): FormLine => {
       const focused = i === formIdx;
-      const marker = focused ? `${GREEN}❯${RESET} ` : "  ";
-      const label = focused ? labels[field]!.padEnd(labelW) : `${DIM}${labels[field]!.padEnd(labelW)}${RESET}`;
+      const rowBase = focused ? THEME.selected : THEME.card;
+      const marker = focused ? `${THEME.blue}▌${rowBase} ` : "  ";
+      const label = `${focused ? THEME.blue : THEME.muted}${labels[field]!.padEnd(labelW)}${rowBase}`;
+      const cursor = focused ? `${bg("7aa2f7")}${fg("16161e")} ${rowBase}` : "";
       let value: string;
-      if (field === "name") value = newName + (focused ? "▌" : "");
-      else if (field === "task") value = newTask + (focused ? "▌" : "");
-      else if (field === "dir") value = newDir + (focused ? "▌" : "");
-      else if (field === "model")
-        value = newModel ? newModel + (focused ? "▌" : "") : (focused ? "▌" : "") + `${DIM}(default)${RESET}`;
-      else if (field === "provider") value = optionStrip(PROVIDER_OPTIONS, newProviderIdx, focused);
-      else if (field === "effort") value = optionStrip(EFFORT_OPTIONS, newEffortIdx, focused);
-      else value = optionStrip(hostOptions, newHostIdx, focused);
-      return marker + label + value;
+      let hint = "";
+      if (field === "name") {
+        value = newName + cursor;
+        hint = `${THEME.faint}branch am/${newName || "…"}${rowBase}`;
+      } else if (field === "task") {
+        value = newTask
+          ? newTask + cursor
+          : `${THEME.faint}describe the task… (optional)${rowBase}${cursor}`;
+      } else if (field === "dir") {
+        value = newDir + cursor;
+        hint = `${THEME.faint}tab complete${rowBase}`;
+      } else if (field === "model") {
+        value = newModel ? newModel + cursor : `${THEME.muted}default${rowBase}${cursor}`;
+      } else if (field === "provider") {
+        value = optionStrip(PROVIDER_OPTIONS, newProviderIdx, rowBase, field);
+      } else if (field === "effort") {
+        value = optionStrip(EFFORT_OPTIONS, newEffortIdx, rowBase, field);
+      } else {
+        value = optionStrip(hostOptions, newHostIdx, rowBase, field);
+      }
+      const left = marker + label + value;
+      return { text: content(hint ? alignAnsi(left, hint, innerWidth) : left, rowBase), field: i };
     };
 
-    const lines: string[] = [];
-    lines.push("");
-    lines.push(`${margin}${GREEN}Create agent${RESET}`);
-    lines.push("");
-    fields.forEach((f, i) => {
-      formHitRows.set(lines.length + 1, i);
-      lines.push(margin + fieldRow(f, i));
+    card.push({ text: border(`╭${"─".repeat(innerWidth)}╮`) });
+    card.push({
+      text: content(alignAnsi(
+        ` ${THEME.green}${BOLD}Create agent${NORMAL_WEIGHT}${THEME.card}`,
+        `${THEME.faint}esc cancel ${THEME.card}`,
+        innerWidth,
+      )),
     });
-    lines.push("");
+    rule();
+    fields.forEach((field, i) => {
+      card.push(fieldRow(field, i));
+      if (field === "dir" && formCandidates.length) {
+        for (const candidate of formCandidates.slice(0, 3)) {
+          card.push({
+            text: content(`  ${" ".repeat(labelW)}${THEME.cyan}${candidate}${THEME.card}`),
+          });
+        }
+        if (formCandidates.length > 3) {
+          card.push({ text: content(`  ${" ".repeat(labelW)}${THEME.muted}… ${formCandidates.length - 3} more${THEME.card}`) });
+        }
+      }
+    });
 
     const active: FeedbackResult | null = creating
       ? { text: `creating "${newName}"…`, level: "info" }
       : feedback;
     if (active) {
-      for (const cell of feedbackBanner(active, Math.min(cols - 2, 100))) {
-        lines.push(margin + (cell.style ?? "") + cell.text + RESET);
+      rule();
+      for (const cell of feedbackBanner(active, innerWidth - 2).slice(0, 3)) {
+        card.push({ text: content(` ${cell.style ?? ""}${cell.text}${THEME.card}`) });
       }
-      lines.push("");
     }
-
-    // Dir autocomplete candidates, packed into columns across the wide pane.
-    if (formCandidates.length) {
-      lines.push(`${margin}${DIM}${formCandidates.length} matches:${RESET}`);
-      const colW = Math.min(cols - 4, Math.max(...formCandidates.map((c) => c.length)) + 2);
-      const perRow = Math.max(1, Math.floor((cols - margin.length) / colW));
-      const shown = formCandidates.slice(0, perRow * 8); // cap the height
-      for (let i = 0; i < shown.length; i += perRow) {
-        lines.push(margin + shown.slice(i, i + perRow).map((c) => c.padEnd(colW)).join(""));
-      }
-      if (shown.length < formCandidates.length) lines.push(`${margin}${DIM}…${RESET}`);
-    }
-
-    // Remote Dir completion is mid-flight: tell the user which host we're asking.
     if (dirQuerying) {
-      lines.push(`${margin}${DIM}querying ${hostOptions[newHostIdx]}…${RESET}`);
+      card.push({ text: content(` ${THEME.muted}querying ${hostOptions[newHostIdx]}…${THEME.card}`) });
     }
+    rule();
+    const provider = PROVIDER_OPTIONS[newProviderIdx]!;
+    const providerColor = provider === "claude" ? THEME.purple : THEME.blue;
+    const where = hostOptions[newHostIdx] === "local" ? "locally" : `on ${hostOptions[newHostIdx]}`;
+    const worktree = handlers.worktreeByDefault ? " in a worktree of" : " in";
+    const summary = `${THEME.muted} will run ${providerColor}${provider}${THEME.muted} ${where}${worktree} ${THEME.blue}${newDir || "the current directory"}${THEME.card}`;
+    const create = `${bg("9ece6a")}${fg("16161e")}${BOLD} ⏎ create ${NORMAL_WEIGHT}${THEME.card}`;
+    card.push({ text: content(alignAnsi(summary, create, innerWidth)) });
+    card.push({ text: border(`╰${"─".repeat(innerWidth)}╯`) });
 
-    const footer = [
-      "Tab next/complete dir",
-      "⇧Tab back",
-      "←/→ change",
-      "Enter create",
-      "Esc cancel",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const footerLines = wrapTokens(footer, cols - 2).map((l) => `${DIM}${l}${RESET}`);
-
-    // Pad the middle so the footer sits on the last rows.
-    while (lines.length < Math.max(0, rows - footerLines.length)) lines.push("");
-    lines.push(...footerLines);
-    return lines.slice(0, rows).map((l) => clipAnsi(l, cols));
+    const footer = keyBar("new-form", handlers, cols, true);
+    const available = Math.max(0, rows - footer.length);
+    const top = Math.max(0, Math.floor((available - card.length) / 2));
+    const screen: string[] = Array.from({ length: top }, () => THEME.app + " ".repeat(cols) + RESET);
+    const left = Math.max(0, Math.floor((cols - cardWidth) / 2));
+    for (const line of card) {
+      const screenRow = screen.length + 1;
+      if (line.field !== undefined) formHitRows.set(screenRow, line.field);
+      screen.push(THEME.app + " ".repeat(left) + line.text + " ".repeat(Math.max(0, cols - left - cardWidth)) + RESET);
+    }
+    while (screen.length < available) screen.push(THEME.app + " ".repeat(cols) + RESET);
+    screen.push(...footer.map((cell) => `${cell.style ?? THEME.sidebar}${padAnsi(cell.text, cols)}${RESET}`));
+    return screen.slice(0, rows);
   };
 
   const render = () => {
@@ -574,19 +729,15 @@ export async function pick(
     renderedSidebarWidth = sidebarWidth;
     const previewWidth = cols - sidebarWidth - 2; // "│ " separator
 
-    // The active message renders as a colored banner under the header (near
-    // the cursor), not buried in the footer. The footer always shows help.
+    // The active message renders under the two-line fleet summary, near the
+    // cursor. The footer is a contextual key bar rather than a prose manual.
     const active: FeedbackResult | null = creating
       ? { text: `creating "${newName}"…`, level: "info" }
       : confirmRemove
         ? { text: `remove "${confirmRemove}"? d again to confirm`, level: "warn" }
         : feedback;
-    const footerHelp =
-      mode === "edit"
-        ? `edit ${visibleItems(items, filter, showAll)[cursor]?.name ?? ""}: ${editMenuHelp(handlers)}`
-        : (handlers.help ?? HELP);
-    const footerLines = wrapTokens(footerHelp, sidebarWidth).map((l) => `${DIM}${clipLine(l, cols)}${RESET}`);
-    const bodyRows = Math.max(1, rows - footerLines.length);
+    const footerCells = keyBar(mode, handlers, sidebarWidth, activity?.active ?? true);
+    const bodyRows = Math.max(1, rows - footerCells.length);
     const bannerBlock: Cell[] = active ? feedbackBanner(active, sidebarWidth) : [];
 
     const matches = filtered();
@@ -601,42 +752,76 @@ export async function pick(
       handlers.highlight(selected.name);
     }
 
-    const header: Cell =
+    const current = items.filter((item) => item.status !== "exited" && item.status !== "dead");
+    const running = current.filter((item) => ["working", "starting", "waiting"].includes(item.status ?? "")).length;
+    const needs = current.filter((item) => item.status === "needs-attention").length;
+    const idle = current.filter((item) => item.status === "idle").length;
+    const exited = items.filter((item) => item.secondary).length;
+    const titleLeft = `${THEME.bright}${BOLD}agent motel${NORMAL_WEIGHT}${THEME.sidebar}  ${THEME.muted}${current.length} agents${THEME.sidebar}`;
+    const titleRight = `${THEME.green}● ${running}${THEME.sidebar} ${THEME.yellow}✱ ${needs}${THEME.sidebar} ${THEME.muted}○ ${idle}${THEME.sidebar}`;
+    const headerBlock: Cell[] = [
+      { text: alignAnsi(titleLeft, titleRight, sidebarWidth), style: THEME.sidebar },
+      {
+        text: exited > 0
+          ? `${THEME.faint}${exited} exited · ${THEME.muted}a${THEME.faint} ${showAll ? "hide" : "show all"} · ${THEME.muted}f${THEME.faint} filter${THEME.sidebar}`
+          : `${THEME.faint}${current.length === 0 ? "no active agents" : "f filter · / search chats"}${THEME.sidebar}`,
+        style: THEME.sidebar,
+      },
+      { text: `${THEME.border}${"─".repeat(sidebarWidth)}${THEME.sidebar}`, style: THEME.sidebar },
+    ];
+    const prompt: Cell | null =
       mode === "cd-dir"
-        ? { text: `cd to: ${cdDir}▌` }
+        ? { text: `${THEME.blue}cd to${THEME.sidebar}  ${cdDir}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
         : mode === "search"
-          ? { text: `search chats: ${chatQuery}▌` }
+          ? { text: `${THEME.blue}search chats${THEME.sidebar}  ${chatQuery}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
           : mode === "filter"
-            ? { text: `filter: ${filter}▌` }
+            ? { text: `${THEME.blue}filter${THEME.sidebar}  ${filter}${THEME.blue}▌${THEME.sidebar}`, style: THEME.sidebar }
             : chatMatch
-              ? { text: `search: ${chatQuery} (${matches.length}) · esc clears`, style: DIM }
+              ? { text: `${THEME.muted}search: ${chatQuery} · ${matches.length} matches · esc clears${THEME.sidebar}`, style: THEME.sidebar }
               : filter
-                ? { text: `filter: ${filter} · ⌫ clears` }
-                : {
-                    text: (() => {
-                      const exited = items.filter((i) => i.secondary).length;
-                      const hint = showAll ? " · all" : exited > 0 ? ` · ${exited} exited (a shows)` : "";
-                      return `agents (${matches.length})${hint} · f filters · / search`;
-                    })(),
-                    style: DIM,
-                  };
+                ? { text: `${THEME.muted}filter: ${filter} · ⌫ clears${THEME.sidebar}`, style: THEME.sidebar }
+                : mode === "edit"
+                  ? { text: `${THEME.orange}edit${THEME.sidebar}  ${selected?.label ?? ""}`, style: THEME.sidebar }
+                  : mode === "help"
+                    ? { text: `${THEME.blue}${BOLD}keyboard shortcuts${NORMAL_WEIGHT}${THEME.sidebar}`, style: THEME.sidebar }
+                    : null;
+    if (prompt) headerBlock.push(prompt);
 
-    // The meta block is sized to the largest meta across ALL items, not the
-    // selected one — otherwise the list capacity (and every row below the
-    // header) shifts as the cursor moves between agents with more or fewer
-    // detail lines.
-    // +1 while chat-searching: filtered() prepends a "match" snippet line to
-    // each row's meta, one more than any raw item carries.
+    // Keep the details card a stable height while moving the cursor. Its
+    // framed treatment mirrors the handoff and visually separates metadata
+    // from the navigable rows above it.
     const metaHeight = Math.max(0, ...items.map((i) => i.meta?.length ?? 0)) + (chatMatch ? 1 : 0);
-    const metaBlock: Cell[] = metaHeight
-      ? [
-          { text: "" },
-          ...Array.from({ length: metaHeight }, (_, i): Cell => ({
-            text: selected?.meta?.[i] ?? "",
-            style: DIM,
-          })),
-        ]
+    const detailWidth = Math.max(8, sidebarWidth - 2);
+    const detailInner = Math.max(1, detailWidth - 2);
+    const detailRow = (value: string): Cell => ({
+      text: ` ${THEME.border}│${THEME.card}${padAnsi(value, detailInner)}${THEME.border}│${THEME.sidebar}`,
+      style: THEME.sidebar,
+    });
+    const metaBlock: Cell[] = metaHeight && selected
+      ? (() => {
+          const status = `${selected.iconStyle ?? THEME.muted}${selected.icon ?? ""} ${selected.statusLabel ?? selected.status ?? ""}${THEME.card}`;
+          const title = alignAnsi(
+            `${THEME.bright}${BOLD}${selected.label}${NORMAL_WEIGHT}${THEME.card}`,
+            status,
+            detailInner,
+          );
+          const rows = Array.from({ length: metaHeight }, (_, i) => {
+            const raw = selected.meta?.[i] ?? "";
+            const match = /^(\S+)(\s+)(.*)$/.exec(raw);
+            if (!match) return detailRow(raw);
+            const label = `${THEME.muted}${match[1]!.padEnd(9)}${THEME.card}`;
+            return detailRow(label + match[3]);
+          });
+          return [
+            { text: "", style: THEME.sidebar },
+            { text: ` ${THEME.border}╭${"─".repeat(detailInner)}╮${THEME.sidebar}`, style: THEME.sidebar },
+            detailRow(title),
+            ...rows,
+            { text: ` ${THEME.border}╰${"─".repeat(detailInner)}╯${THEME.sidebar}`, style: THEME.sidebar },
+          ];
+        })()
       : [];
+    const visibleMetaBlock = mode === "help" ? [] : metaBlock;
 
     // Section headers are rendered only when the matches span more than one
     // section (a lone "local" header is noise); they consume list rows, so
@@ -645,60 +830,95 @@ export async function pick(
     const showSections = sections.length > 1;
     const headerRows = showSections ? sections.length : 0;
 
-    // Hub focus indicator (a top row): a calm dim line when the sidebar drives
-    // the keyboard, a loud bar when input is going to the locked-in session.
-    const indicator: Cell | null = activity
-      ? activity.active
-        ? { text: `● ${activity.text}`, style: DIM }
-        : { text: `▶ ${activity.text}`, style: "\x1b[30;43m" } // black on yellow
-      : null;
-
     // Window the list around the cursor so long agent lists stay navigable.
-    // The indicator, banner and meta block consume rows just like the header.
-    const listCapacity = Math.max(
+    // Reserve rows for overflow hints when the fleet is taller than its pane.
+    const availableListRows = Math.max(
       1,
-      bodyRows - 1 - (indicator ? 1 : 0) - bannerBlock.length - metaBlock.length - headerRows,
+      bodyRows - headerBlock.length - bannerBlock.length - visibleMetaBlock.length - headerRows,
     );
+    const overflowRows = matches.length > availableListRows ? 2 : 0;
+    const listCapacity = Math.max(1, availableListRows - overflowRows);
     let start = 0;
     if (matches.length > listCapacity) {
       start = Math.min(Math.max(0, cursor - Math.floor(listCapacity / 2)), matches.length - listCapacity);
     }
 
-    const side: Cell[] = indicator ? [indicator, header, ...bannerBlock] : [header, ...bannerBlock];
-    let lastSection: string | null = null;
-    matches.slice(start, start + listCapacity).forEach((item, i) => {
-      const idx = start + i;
-      if (showSections && (item.section ?? "") !== lastSection) {
-        lastSection = item.section ?? "";
-        const title = ` ${lastSection || "local"} `;
-        const dashes = "─".repeat(Math.max(0, sidebarWidth - title.length - 1));
-        side.push({ text: `─${title}${dashes}`, style: DIM });
+    const side: Cell[] = [...headerBlock, ...bannerBlock];
+    if (mode === "help") {
+      const key = (value: string) => `${THEME.keycap} ${value.padEnd(7)} ${THEME.sidebar}`;
+      const helpRows = [
+        `${THEME.muted}NAVIGATION${THEME.sidebar}`,
+        `${key("↑ ↓ / j k")} preview agent`,
+        `${key("enter / →")} ${handlers.select ? "lock into session" : "jump to agent"}`,
+        ...(handlers.select ? [`${key("ctrl-q")} return to sidebar`] : []),
+        "",
+        `${THEME.muted}FLEET${THEME.sidebar}`,
+        ...(handlers.create ? [`${key("n")} create agent`] : []),
+        `${key("f")} filter names/tasks`,
+        `${key("/")} search conversations`,
+        ...(handlers.regroup ? [`${key("g")} group host/project`] : []),
+        `${key("a")} show exited agents`,
+        ...(hasEditActions(handlers) ? [`${key("e")} edit selected agent`] : []),
+        `${key("q / esc")} ${handlers.quit ? "detach" : "quit"}`,
+      ];
+      side.push(...helpRows.map((text) => ({ text, style: THEME.sidebar })));
+    } else {
+      if (start > 0) {
+        side.push({ text: `${THEME.muted}↑ ${start} more${THEME.sidebar}`, style: THEME.sidebar });
       }
-      listHitRows.set(side.length + 1, idx);
-      const prefix = idx === cursor ? "❯ " : "  ";
-      const right = item.right ?? "";
-      const icon = item.icon ?? "";
-      const iconWidth = icon ? visibleWidth(icon) + 1 : 0; // glyph + space
-      const labelWidth = Math.max(1, sidebarWidth - prefix.length - iconWidth - (right ? right.length + 1 : 0));
-      const label = clipLine(item.label, labelWidth).padEnd(labelWidth);
-      if (idx === cursor) {
-        // The inverse bar highlights the whole row; keep it free of inner
-        // color/RESETs (a RESET would cut the inverse off mid-line).
-        const text = prefix + (icon ? icon + " " : "") + label + (right ? " " + right : "");
-        side.push({ text, style: INVERSE });
-      } else {
-        const iconSeg = icon ? (item.iconStyle ?? "") + icon + RESET + " " : "";
-        const rightSeg = right ? " " + (item.rightStyle ?? "") + right + RESET : "";
-        side.push({ text: prefix + iconSeg + label + rightSeg });
-      }
-    });
-    if (matches.length === 0) {
-      side.push({
-        text: items.length === 0 ? "  (no agents — ctrl-n creates one)" : "  (no matches)",
-        style: DIM,
+      let lastSection: string | null = null;
+      matches.slice(start, start + listCapacity).forEach((item, i) => {
+        const idx = start + i;
+        if (showSections && (item.section ?? "") !== lastSection) {
+          lastSection = item.section ?? "";
+          const count = matches.filter((candidate) => (candidate.section ?? "") === lastSection).length;
+          const title = ` ${(lastSection || "local").toUpperCase()} `;
+          const countText = String(count);
+          const dashes = "─".repeat(Math.max(1, sidebarWidth - title.length - countText.length));
+          side.push({
+            text: `${THEME.muted}${title}${THEME.border}${dashes}${THEME.muted}${countText}${THEME.sidebar}`,
+            style: THEME.sidebar,
+          });
+        }
+        listHitRows.set(side.length + 1, idx);
+        const selectedRow = idx === cursor;
+        const rowBase = selectedRow ? THEME.selected : THEME.sidebar;
+        const prefix = selectedRow ? `${THEME.blue}${bg("283457")}▌${rowBase} ` : "  ";
+        const icon = item.icon ?? "";
+        const iconWidth = icon ? visibleWidth(icon) + 1 : 0;
+        const right = item.right ?? "";
+        const queue = (item.queueDepth ?? 0) > 0 ? `▸${item.queueDepth}` : "";
+        const badge = item.badge ?? "";
+        const suffixWidth =
+          (right ? visibleWidth(right) + 1 : 0) +
+          (queue ? visibleWidth(queue) + 1 : 0) +
+          (badge ? visibleWidth(badge) + 3 : 0);
+        const labelWidth = Math.max(1, sidebarWidth - 2 - iconWidth - suffixWidth);
+        const label = clipLine(item.label, labelWidth).padEnd(labelWidth);
+        if (selectedRow) {
+          const suffix = `${right ? ` ${right}` : ""}${queue ? ` ${queue}` : ""}${badge ? `  ${badge} ` : ""}`;
+          side.push({ text: prefix + (icon ? icon + " " : "") + label + suffix, style: THEME.selected });
+        } else {
+          const iconSeg = icon ? `${item.iconStyle ?? THEME.muted}${icon}${THEME.sidebar} ` : "";
+          const labelSeg = `${item.labelStyle ?? THEME.text}${label}${THEME.sidebar}`;
+          const rightSeg = right ? ` ${item.rightStyle ?? THEME.muted}${right}${THEME.sidebar}` : "";
+          const queueSeg = queue ? ` ${THEME.yellow}${queue}${THEME.sidebar}` : "";
+          const badgeSeg = badge ? ` ${item.badgeStyle ?? THEME.muted} ${badge} ${THEME.sidebar}` : "";
+          side.push({ text: prefix + iconSeg + labelSeg + rightSeg + queueSeg + badgeSeg, style: THEME.sidebar });
+        }
       });
+      const end = Math.min(matches.length, start + listCapacity);
+      if (end < matches.length) {
+        side.push({ text: `${THEME.muted}↓ ${matches.length - end} more${THEME.sidebar}`, style: THEME.sidebar });
+      }
+      if (matches.length === 0) {
+        side.push({
+          text: items.length === 0 ? "  no agents — n creates one" : "  no matches",
+          style: THEME.muted,
+        });
+      }
+      side.push(...visibleMetaBlock);
     }
-    side.push(...metaBlock);
 
     const previewLines =
       showPreview && selected && handlers.preview ? handlers.preview(selected.name).slice(-bodyRows) : [];
@@ -710,16 +930,21 @@ export async function pick(
       // VISIBLE width so escape codes don't throw off the column math.
       const clipped = visibleWidth(cell.text) > sidebarWidth ? clipAnsi(cell.text, sidebarWidth) : cell.text;
       const padded = clipped + " ".repeat(Math.max(0, sidebarWidth - visibleWidth(clipped)));
-      let line = cell.style ? cell.style + padded + RESET : padded;
+      let line = THEME.sidebar + (cell.style ?? "") + padded + RESET;
       if (showPreview) {
         // Preview lines keep their own colors; RESET stops any unclosed
         // attribute from bleeding into the next row.
-        line += DIM + "│ " + RESET + clipAnsi(previewLines[r] ?? "", previewWidth) + RESET;
+        const preview = clipAnsi(previewLines[r] ?? "", previewWidth);
+        line += THEME.app + THEME.border + "│ " + THEME.app + padAnsi(preview, previewWidth) + RESET;
       }
       lines.push(line);
     }
 
-    lines.push(...footerLines);
+    for (const cell of footerCells) {
+      let line = THEME.sidebar + (cell.style ?? "") + padAnsi(cell.text, sidebarWidth) + RESET;
+      if (showPreview) line += THEME.app + " ".repeat(previewWidth + 2) + RESET;
+      lines.push(line);
+    }
 
     // No trailing newline: the footer sits on the last row and writing past
     // it would scroll the alternate screen.
@@ -921,6 +1146,11 @@ export async function pick(
         return render();
       }
 
+      if (mode === "help") {
+        if (key === "?" || key === "\x1b" || key === "q") mode = "list";
+        return render();
+      }
+
       if (mode === "edit") {
         const target = filtered()[cursor];
         const pending = confirmRemove;
@@ -1044,7 +1274,10 @@ export async function pick(
           else if (field === "effort") newEffortIdx = cycleField(newEffortIdx, EFFORT_OPTIONS.length, dir);
           else if (field === "where") newHostIdx = cycleField(newHostIdx, hostOptions.length, dir);
         } else if (key === "\x7f" || key === "\b") {
-          if (field === "name") newName = newName.slice(0, -1);
+          if (field === "name") {
+            newName = newName.slice(0, -1);
+            feedback = null;
+          }
           else if (field === "task") newTask = newTask.slice(0, -1);
           else if (field === "model") newModel = newModel.slice(0, -1);
           else if (field === "dir") {
@@ -1053,7 +1286,14 @@ export async function pick(
             dirQueryGen++; // input changed: discard any in-flight completion
           }
         } else if (key >= " " && !key.startsWith("\x1b")) {
-          if (field === "name") newName += key;
+          if (field === "name") {
+            if (/^[a-zA-Z0-9_-]$/.test(key)) {
+              newName += key;
+              feedback = null;
+            } else {
+              feedback = { text: "use letters, numbers, dashes, or underscores", level: "warn" };
+            }
+          }
           else if (field === "task") newTask += key;
           else if (field === "model") newModel += key;
           else if (field === "dir") {
@@ -1153,6 +1393,9 @@ export async function pick(
           mode = "edit";
           feedback = null;
         }
+      } else if (key === "?") {
+        mode = "help";
+        feedback = null;
       } else if (key === "\x1b[A" || key === "k") moveCursor(-1);
       else if (key === "\x1b[B" || key === "j") moveCursor(1);
       // PageUp/PageDown: over the hub the sidebar doesn't run mouse mode, so

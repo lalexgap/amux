@@ -22,13 +22,13 @@ export const STATUS_ICONS: Record<DisplayStatus, string> = {
 // without crowding the row. Active = green, needs-eyes = yellow, quiet = dim,
 // gone = dim red.
 export const STATUS_COLORS: Record<DisplayStatus, string> = {
-  starting: "\x1b[2m", // dim
-  idle: "\x1b[2m",
-  waiting: "\x1b[33m", // yellow
-  working: "\x1b[32m", // green
-  "needs-attention": "\x1b[33m",
-  exited: "\x1b[31;2m", // dim red
-  dead: "\x1b[31;2m",
+  starting: "\x1b[38;2;86;95;137m", // muted
+  idle: "\x1b[38;2;86;95;137m",
+  waiting: "\x1b[38;2;224;175;104m", // amber
+  working: "\x1b[38;2;158;206;106m", // green
+  "needs-attention": "\x1b[38;2;224;175;104m",
+  exited: "\x1b[38;2;119;70;82m", // dim red
+  dead: "\x1b[38;2;119;70;82m",
 };
 
 // Claude Code fires no hook when a session goes idle while waiting on a
@@ -209,6 +209,82 @@ export interface AgentRow {
   // For waiting agents: the indicator line ("wake-up in 3m"), display-ready.
   statusDetail?: string;
   repoRoot?: string;
+  diff?: DiffSummary;
+}
+
+export interface DiffSummary {
+  added: number;
+  removed: number;
+  files: number;
+  dirty: boolean;
+}
+
+const DIFF_CACHE_MS = 3000;
+const diffCache = new Map<string, { value: DiffSummary | null; at: number }>();
+const diffInFlight = new Set<string>();
+const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+function summarizeDiff(statusText: string, numstatText: string): DiffSummary {
+  const statusLines = statusText.split("\n").filter(Boolean);
+  let added = 0;
+  let removed = 0;
+  for (const line of numstatText.split("\n")) {
+    const [a, r] = line.split("\t");
+    if (a && a !== "-") added += Number(a) || 0;
+    if (r && r !== "-") removed += Number(r) || 0;
+  }
+  return { added, removed, files: statusLines.length, dirty: statusLines.length > 0 };
+}
+
+// Best-effort worktree summary for the sidebar detail card. The picker refreshes
+// every second, so cache the git subprocesses; a three-second delay is still
+// effectively live while avoiding a process storm across a large fleet.
+export function gitDiffSummary(dir: string): DiffSummary | null {
+  const cached = diffCache.get(dir);
+  if (cached && Date.now() - cached.at < DIFF_CACHE_MS) return cached.value;
+
+  const status = Bun.spawnSync(["git", "-C", dir, "status", "--short", "--untracked-files=all"], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  if (status.exitCode !== 0) {
+    diffCache.set(dir, { value: null, at: Date.now() });
+    return null;
+  }
+
+  const numstat = Bun.spawnSync(["git", "-C", dir, "diff", "--numstat", "HEAD", "--"], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const value = summarizeDiff(decode(status.stdout), numstat.exitCode === 0 ? decode(numstat.stdout) : "");
+  diffCache.set(dir, { value, at: Date.now() });
+  return value;
+}
+
+async function gitText(dir: string, args: string[]): Promise<{ text: string; ok: boolean }> {
+  const proc = Bun.spawn(["git", "-C", dir, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const [text, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+  return { text, ok: exitCode === 0 };
+}
+
+// The fleet can contain hundreds of historical agents. First paint must never
+// wait for their repositories, so the UI uses this stale-while-revalidate path
+// and picks up results on its next one-second refresh.
+export function cachedGitDiffSummary(dir: string): DiffSummary | undefined {
+  const cached = diffCache.get(dir);
+  if ((!cached || Date.now() - cached.at >= DIFF_CACHE_MS) && !diffInFlight.has(dir)) {
+    diffInFlight.add(dir);
+    void Promise.all([
+      gitText(dir, ["status", "--short", "--untracked-files=all"]),
+      gitText(dir, ["diff", "--numstat", "HEAD", "--"]),
+    ]).then(([status, numstat]) => {
+      diffCache.set(dir, {
+        value: status.ok ? summarizeDiff(status.text, numstat.ok ? numstat.text : "") : null,
+        at: Date.now(),
+      });
+    }).finally(() => diffInFlight.delete(dir));
+  }
+  return cached?.value ?? undefined;
 }
 
 export function agentRows(): AgentRow[] {

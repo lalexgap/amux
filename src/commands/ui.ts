@@ -18,9 +18,7 @@ import { readLastAttached } from "../state";
 // `tmux attach`. Nesting keeps the agent fully interactive — real keyboard,
 // colors, mouse — without am re-implementing a terminal.
 const HUB_SESSION = "am-hub";
-const SIDEBAR_WIDTH = 38;
-
-const HUB_HELP = "click/enter lock in · wheel/↑/↓/j/k preview · ctrl-q sidebar · f filter · g group · a all · n new · e edit… · q/esc detach · ctrl-c quit";
+const SIDEBAR_WIDTH = 44;
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {
@@ -30,7 +28,7 @@ function hubTarget(): string {
 // A long-lived pane command that just displays a message — used before any
 // agent is shown and for agents without a live session.
 function messageCommand(message: string): string {
-  return `printf '\\n\\n   %s\\n' ${shQuote(message)}; sleep 86400000`;
+  return `printf '\\033[48;2;26;27;38m\\033[38;2;86;95;137m\\033[2J\\033[H\\n\\n   %s\\033[0m\\n' ${shQuote(message)}; sleep 86400000`;
 }
 
 function paneIdWhere(atLeft: "0" | "1"): string | null {
@@ -93,6 +91,8 @@ export function createHub(): void {
   tmux("set-option", "-t", hubTarget(), "set-titles", "on");
   tmux("set-option", "-t", hubTarget(), "set-titles-string", "am");
   tmux("set-option", "-t", hubTarget(), "mouse", "on");
+  tmux("set-option", "-w", "-t", hubTarget(), "pane-border-style", "fg=#2a2c3d");
+  tmux("set-option", "-w", "-t", hubTarget(), "pane-active-border-style", "fg=#2a2c3d");
   applyHubBindings();
   tmux("set-option", "-t", hubTarget(), "key-table", "am-hub");
 }
@@ -262,6 +262,7 @@ export async function sidebarCommand(): Promise<void> {
   };
 
   const load = fleetPickerItems;
+  const config = loadConfig();
 
   const handlers: PickerHandlers = {
     highlight: (key: string) => {
@@ -294,7 +295,7 @@ export async function sidebarCommand(): Promise<void> {
       if (agent) destroyAgent(agent, { clean: false });
       return `removed ${name}`;
     },
-    remotes: loadConfig().remotes ?? [],
+    remotes: config.remotes ?? [],
     create: async (
       name: string,
       task: string | undefined,
@@ -346,13 +347,14 @@ export async function sidebarCommand(): Promise<void> {
       if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
       return readAgent(name)?.dir ?? "";
     },
-    defaultProvider: loadConfig().defaultProvider,
+    defaultProvider: config.defaultProvider,
+    worktreeByDefault: config.worktreeByDefault,
 
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);
     },
     // The create form wants the whole screen, but the sidebar process only
-    // paints its own ~38-col pane. Zoom that pane (resize-pane -Z) while the
+    // paints its own ~44-col pane. Zoom that pane (resize-pane -Z) while the
     // form is up and un-zoom when it closes. Idempotent: we check the current
     // zoom flag so a double open/close never leaves it inverted.
     onForm: (active: boolean) => {
@@ -372,7 +374,6 @@ export async function sidebarCommand(): Promise<void> {
       const active = result.stdout.trim() === "1";
       return { active, text: active ? "keys → sidebar" : "keys → session · ctrl-q ↩" };
     },
-    help: HUB_HELP,
   };
 
   await pick(load, handlers, readLastAttached().current ?? undefined);

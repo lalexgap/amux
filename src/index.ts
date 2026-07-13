@@ -302,6 +302,7 @@ function maybeForwardToFleet(command: string | undefined, args: ParsedArgs, argv
 
 async function pickerFlow(): Promise<void> {
   const load = fleetPickerItems;
+  const config = loadConfig();
   const handlers: PickerHandlers = {
     stop: (key: string) => {
       const { host, name } = splitFleetKey(key);
@@ -377,7 +378,8 @@ async function pickerFlow(): Promise<void> {
       if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
       return readAgent(name)?.dir ?? "";
     },
-    defaultProvider: loadConfig().defaultProvider,
+    defaultProvider: config.defaultProvider,
+    worktreeByDefault: config.worktreeByDefault,
   };
 
   // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),
