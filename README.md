@@ -20,6 +20,8 @@ enter/→ lock in · n new        │
 The picker is a full-screen split view: agents and their details in the left
 sidebar, a live preview of the highlighted agent's screen on the right,
 refreshed every second — peek at what each agent is doing without attaching.
+Click an agent (or press Enter) to attach, use the mouse wheel to move through
+the list, and click a field in the create form to focus it.
 `ctrl-n` spawns a new agent right from the picker (it prompts for a name and
 an optional task, then jumps into the new session).
 

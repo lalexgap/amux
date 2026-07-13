@@ -72,3 +72,28 @@ describe("background task surfacing", () => {
     }
   });
 });
+
+describe("gitDiffSummary", () => {
+  test("reports tracked line changes and all dirty files", async () => {
+    const { gitDiffSummary } = await import("../src/commands/ls");
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "am-diff-"));
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "ignore", stderr: "ignore" });
+    try {
+      git("init", "-q");
+      git("config", "user.email", "am@example.test");
+      git("config", "user.name", "Agent Motel");
+      writeFileSync(join(dir, "tracked.txt"), "one\n");
+      git("add", "tracked.txt");
+      git("commit", "-qm", "initial");
+      writeFileSync(join(dir, "tracked.txt"), "one\ntwo\n");
+      writeFileSync(join(dir, "new.txt"), "untracked\n");
+
+      expect(gitDiffSummary(dir)).toEqual({ added: 1, removed: 0, files: 2, dirty: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
