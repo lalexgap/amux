@@ -9,7 +9,7 @@
 # sh -l so PATH picks up ~/.bun/bin from the profile.
 
 [Unit]
-Description=amux daemon
+Description=Agent Motel daemon
 
 [Service]
 Type=forking

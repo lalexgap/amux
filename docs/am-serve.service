@@ -17,7 +17,7 @@
 # sh -l so PATH picks up ~/.bun/bin from the profile.
 
 [Unit]
-Description=amux fleet HTTP API
+Description=Agent Motel fleet HTTP API
 After=network-online.target
 
 [Service]

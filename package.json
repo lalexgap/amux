@@ -1,7 +1,7 @@
 {
-  "name": "amux",
+  "name": "agent-motel",
   "version": "0.1.0",
-  "description": "amux — a multiplexer for coding agents; the `am` CLI manages and jumps between Claude Code/Codex agents running in tmux",
+  "description": "Agent Motel — rooms for coding agents; the `am` CLI manages and jumps between Claude Code/Codex agents running in tmux",
   "license": "MIT",
   "type": "module",
   "bin": {
