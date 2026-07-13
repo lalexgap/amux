@@ -346,6 +346,7 @@ export async function sidebarCommand(): Promise<void> {
       if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
       return readAgent(name)?.dir ?? "";
     },
+    defaultProvider: loadConfig().defaultProvider,
 
     quit: () => {
       tmux("detach-client", "-s", `=${HUB_SESSION}`);

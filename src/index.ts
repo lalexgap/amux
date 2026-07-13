@@ -58,7 +58,8 @@ usage:
                               (-m - reads the task from stdin, --file <path> from
                                a file — both dodge shell quoting for long tasks;
                                --no-jump to stay; non-TTY callers never jump;
-                               --codex runs Codex instead of Claude Code;
+                               --codex / --claude pick the provider, overriding
+                               config.defaultProvider (default: claude);
                                --model / --effort override the provider defaults)
                               git repos get a fresh worktree on branch am/<name>
                               by default — --in-place uses the dir as-is,
@@ -376,7 +377,7 @@ async function pickerFlow(): Promise<void> {
       if (host) return name ? (cachedRemoteRow(host, name)?.dir ?? "") : "";
       return readAgent(name)?.dir ?? "";
     },
-
+    defaultProvider: loadConfig().defaultProvider,
   };
 
   // Hub loop: attach blocks until the user detaches (ctrl-q inside an agent),
@@ -436,7 +437,7 @@ async function main(): Promise<void> {
         message: await resolveTask(args.flags),
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
-        provider: args.flags.codex ? "codex" : undefined,
+        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         resume: args.flags.resume as string | boolean | undefined,
@@ -456,7 +457,7 @@ async function main(): Promise<void> {
         message: runMessage,
         dir: args.flags.dir as string | undefined,
         worktree: args.flags.worktree as string | undefined,
-        provider: args.flags.codex ? "codex" : undefined,
+        provider: args.flags.codex ? "codex" : args.flags.claude ? "claude" : undefined,
         model: args.flags.model as string | undefined,
         effort: args.flags.effort as string | undefined,
         timeoutSec: numberFlag(args, "timeout"),

@@ -98,7 +98,7 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   }
   const session = sessionName(name);
   if (hasSession(session)) throw new Error(`tmux session ${session} already exists`);
-  const provider = opts.provider ?? "claude";
+  const provider = opts.provider ?? loadConfig().defaultProvider;
   // Fail loudly now rather than spawning a tmux session that dies instantly
   // ("command not found" with no surviving error) — bit handoffs on machines
   // without the other provider installed.

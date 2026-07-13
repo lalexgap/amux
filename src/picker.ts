@@ -96,6 +96,9 @@ export interface PickerHandlers {
   activity?: () => { active: boolean; text: string } | null;
   // Footer help text override (persistent mode has different key semantics).
   help?: string;
+  // Provider preselected in the create form (config's defaultProvider). Falls
+  // back to the first PROVIDER_OPTIONS entry when unset or unrecognized.
+  defaultProvider?: string;
   // The create flow opens a full-screen form. The sidebar paints only its own
   // ~38-col pane, so the hub zooms that pane (tmux resize-pane -Z) while the
   // form is up and un-zooms when it closes. Called with true on open, false on
@@ -356,8 +359,10 @@ export async function pick(
   const hostOptions = ["local", ...(handlers.remotes ?? [])];
   let newHostIdx = 0;
   // Provider (Claude/Codex) and reasoning effort cycle like Where; model is
-  // free text (blank = the provider's default model).
-  let newProviderIdx = 0;
+  // free text (blank = the provider's default model). The initial selection
+  // follows config's defaultProvider so the form opens on the user's default.
+  const defaultProviderIdx = Math.max(0, PROVIDER_OPTIONS.indexOf(handlers.defaultProvider ?? PROVIDER_OPTIONS[0]!));
+  let newProviderIdx = defaultProviderIdx;
   let newModel = "";
   let newEffortIdx = 0;
   // Full-screen create form: which field has the focus ring, and the dir
@@ -728,7 +733,7 @@ export async function pick(
           newTask = "";
           newDir = "";
           newHostIdx = 0;
-          newProviderIdx = 0;
+          newProviderIdx = defaultProviderIdx;
           newModel = "";
           newEffortIdx = 0;
           formIdx = 0;
@@ -901,7 +906,7 @@ export async function pick(
           newTask = "";
           newDir = "";
           newHostIdx = 0;
-          newProviderIdx = 0;
+          newProviderIdx = defaultProviderIdx;
           newModel = "";
           newEffortIdx = 0;
           formIdx = 0;
@@ -1067,7 +1072,7 @@ export async function pick(
         newTask = "";
         newDir = handlers.defaultDir?.(cursorName) ?? "";
         newHostIdx = 0;
-        newProviderIdx = 0;
+        newProviderIdx = defaultProviderIdx;
         newModel = "";
         newEffortIdx = 0;
         formIdx = 0;
