@@ -20,7 +20,7 @@ import { readLastAttached } from "../state";
 const HUB_SESSION = "am-hub";
 const SIDEBAR_WIDTH = 38;
 
-const HUB_HELP = "↑/↓/j/k preview · enter/→ lock in · ctrl-q sidebar · f filter · g group · a all · n new · e edit… · q/esc detach · ctrl-c quit";
+const HUB_HELP = "click/enter lock in · wheel/↑/↓/j/k preview · ctrl-q sidebar · f filter · g group · a all · n new · e edit… · q/esc detach · ctrl-c quit";
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
 function hubTarget(): string {

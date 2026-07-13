@@ -161,6 +161,27 @@ export function splitKeys(data: string): string[] {
   return keys;
 }
 
+export interface MouseEvent {
+  button: number;
+  x: number;
+  y: number;
+  pressed: boolean;
+}
+
+// SGR mouse reports use one-based screen coordinates. Keeping the parser
+// separate from input dispatch makes malformed/partial reports harmless and
+// keeps the hit-testing code readable.
+export function parseMouseEvent(key: string): MouseEvent | null {
+  const match = /^\x1b\[<([0-9]+);([0-9]+);([0-9]+)([Mm])$/.exec(key);
+  if (!match) return null;
+  return {
+    button: Number(match[1]),
+    x: Number(match[2]),
+    y: Number(match[3]),
+    pressed: match[4] === "M",
+  };
+}
+
 // clipLine for lines carrying SGR color codes (tmux capture-pane -e):
 // escapes are zero-width and never split mid-sequence.
 export function clipAnsi(line: string, width: number): string {
@@ -195,6 +216,10 @@ const HIDE_CURSOR = "\x1b[?25l";
 const SHOW_CURSOR = "\x1b[?25h";
 const ALT_SCREEN_ON = "\x1b[?1049h";
 const ALT_SCREEN_OFF = "\x1b[?1049l";
+// Basic button tracking plus SGR coordinates. SGR avoids the old protocol's
+// coordinate limit and is what tmux's `send-keys -M` forwards to the picker.
+const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF = "\x1b[?1006l\x1b[?1000l";
 const CLEAR_LINE = "\x1b[2K";
 // Autowrap off while the picker owns the screen: a line that overruns the
 // width (e.g. a glyph the terminal draws 2 cells wide) must clip, not wrap —
@@ -213,7 +238,7 @@ const FB_COLOR: Record<FeedbackLevel, string> = { info: DIM, ok: GREEN, warn: YE
 // Errors carry detail (ssh stderr) worth more room than a routine toast.
 const ERROR_FEEDBACK_LINES = 10;
 
-const HELP = "↑/↓/j/k · enter jumps (ctrl-q returns) · f filter · g group · a all · n new · e edit… · q/esc quit";
+const HELP = "click/enter jumps (ctrl-q returns) · wheel/↑/↓/j/k moves · f filter · g group · a all · n new · e edit… · q/esc quit";
 
 const MAX_FEEDBACK_LINES = 6;
 
@@ -382,6 +407,11 @@ export async function pick(
   // Hub focus indicator: which pane is driving the keyboard. Refreshed on the
   // load tick and right after a lock-in (cheap tmux poll); null off the hub.
   let activity = handlers.activity?.() ?? null;
+  // Rebuilt on every paint. Values are indexes into the current filtered
+  // result set, so section headers and variable-height banners remain safe.
+  const listHitRows = new Map<number, number>();
+  const formHitRows = new Map<number, number>();
+  let renderedSidebarWidth = 0;
   const refreshActivity = () => {
     activity = handlers.activity?.() ?? null;
   };
@@ -438,6 +468,7 @@ export async function pick(
   // rendered across the whole (zoomed) pane rather than the list's narrow
   // column. Returns the screen as an array of rows.
   const renderForm = (cols: number, rows: number): string[] => {
+    formHitRows.clear();
     const labels: Record<string, string> = {
       name: "Name",
       task: "Task (optional)",
@@ -477,7 +508,10 @@ export async function pick(
     lines.push("");
     lines.push(`${margin}${GREEN}Create agent${RESET}`);
     lines.push("");
-    fields.forEach((f, i) => lines.push(margin + fieldRow(f, i)));
+    fields.forEach((f, i) => {
+      formHitRows.set(lines.length + 1, i);
+      lines.push(margin + fieldRow(f, i));
+    });
     lines.push("");
 
     const active: FeedbackResult | null = creating
@@ -527,6 +561,8 @@ export async function pick(
   const render = () => {
     const cols = process.stdout.columns ?? 80;
     const rows = process.stdout.rows ?? 24;
+    listHitRows.clear();
+    renderedSidebarWidth = cols;
 
     if (mode === "new-form") {
       out("\x1b[H" + renderForm(cols, rows).map((l) => CLEAR_LINE + l).join("\r\n"));
@@ -535,6 +571,7 @@ export async function pick(
 
     const showPreview = !!handlers.preview && cols >= 28 + MIN_PREVIEW_WIDTH + 2;
     const sidebarWidth = sidebarWidthFor(cols, showPreview);
+    renderedSidebarWidth = sidebarWidth;
     const previewWidth = cols - sidebarWidth - 2; // "│ " separator
 
     // The active message renders as a colored banner under the header (near
@@ -637,6 +674,7 @@ export async function pick(
         const dashes = "─".repeat(Math.max(0, sidebarWidth - title.length - 1));
         side.push({ text: `─${title}${dashes}`, style: DIM });
       }
+      listHitRows.set(side.length + 1, idx);
       const prefix = idx === cursor ? "❯ " : "  ";
       const right = item.right ?? "";
       const icon = item.icon ?? "";
@@ -691,7 +729,7 @@ export async function pick(
   process.stdin.setRawMode(true);
   process.stdin.resume();
   out("\x1b]0;am\x07"); // tab title; agent sessions set their own via tmux set-titles
-  out(ALT_SCREEN_ON + HIDE_CURSOR + WRAP_OFF);
+  out(ALT_SCREEN_ON + HIDE_CURSOR + WRAP_OFF + MOUSE_ON);
   render();
 
   // Keep statuses, queue depths, and the preview live while the picker is open.
@@ -713,7 +751,7 @@ export async function pick(
       process.stdin.off("data", onData);
       process.stdin.setRawMode(false);
       process.stdin.pause();
-      out(WRAP_ON + ALT_SCREEN_OFF + SHOW_CURSOR);
+      out(MOUSE_OFF + WRAP_ON + ALT_SCREEN_OFF + SHOW_CURSOR);
       resolve(value);
     };
 
@@ -807,17 +845,45 @@ export async function pick(
       cursorName = matches[cursor]?.name ?? null;
     };
 
+    const activateSelection = () => {
+      const match = filtered()[cursor];
+      if (!match) return;
+      if (!handlers.select) return finish(match.name);
+      feedback = asFeedback(handlers.select(match.name));
+      items = load();
+      // Focus just moved to the agent pane — reflect it without waiting a tick.
+      refreshActivity();
+    };
+
     const handleKey = (key: string) => {
       if (key === "\x03") return finish(null); // ctrl-c
 
-      // Mouse: the wheel scrolls the list; every other mouse event is
-      // swallowed so clicks/drags never alias into hotkeys.
-      const mouse = /^\x1b\[<([0-9]+);/.exec(key);
+      // Mouse wheel follows the list. A left click activates an agent row or,
+      // in the create form, moves the focus ring to the clicked field.
+      // Releases and clicks outside known rows are deliberately ignored.
+      const mouse = parseMouseEvent(key);
       if (mouse) {
-        const button = Number(mouse[1]);
-        if (key.endsWith("M") && (button === 64 || button === 65)) {
-          moveCursor(button === 64 ? -1 : 1);
+        if (mouse.pressed && (mouse.button === 64 || mouse.button === 65)) {
+          moveCursor(mouse.button === 64 ? -1 : 1);
           render();
+        } else if (mouse.pressed && mouse.button === 0) {
+          if (mode === "new-form") {
+            const clickedField = formHitRows.get(mouse.y);
+            if (clickedField !== undefined) {
+              formIdx = clickedField;
+              formCandidates = [];
+              dirQueryGen++;
+              render();
+            }
+          } else if ((mode === "list" || mode === "filter" || mode === "search") && mouse.x <= renderedSidebarWidth) {
+            const clickedIndex = listHitRows.get(mouse.y);
+            if (clickedIndex !== undefined) {
+              cursor = clickedIndex;
+              cursorName = filtered()[cursor]?.name ?? null;
+              activateSelection();
+              if (!finished) render();
+            }
+          }
         }
         return;
       }
@@ -1052,14 +1118,7 @@ export async function pick(
       } else if (key === "\r" || key === "\n" || (key === "\x1b[C" && !!handlers.select)) {
         // Enter jumps (or locks into the agent pane in persistent mode,
         // where → does the same).
-        const match = filtered()[cursor];
-        if (match) {
-          if (!handlers.select) return finish(match.name);
-          feedback = asFeedback(handlers.select(match.name));
-          items = load();
-          // Focus just moved to the agent pane — reflect it without waiting a tick.
-          refreshActivity();
-        }
+        activateSelection();
       } else if (key === "f") {
         mode = "filter";
         feedback = null;

@@ -5,6 +5,7 @@ import {
   cycleField,
   feedbackBanner,
   formFields,
+  parseMouseEvent,
   splitKeys,
   visibleWidth,
   wrapTokens,
@@ -40,6 +41,27 @@ describe("splitKeys", () => {
   test("application-mode (SS3) arrows normalize to CSI form", () => {
     expect(splitKeys("\x1bOC")).toEqual(["\x1b[C"]);
     expect(splitKeys("\x1bOA\x1bOB")).toEqual(["\x1b[A", "\x1b[B"]);
+  });
+});
+
+describe("parseMouseEvent", () => {
+  test("parses SGR button presses and one-based coordinates", () => {
+    expect(parseMouseEvent("\x1b[<0;12;7M")).toEqual({
+      button: 0,
+      x: 12,
+      y: 7,
+      pressed: true,
+    });
+  });
+
+  test("distinguishes releases and wheel events", () => {
+    expect(parseMouseEvent("\x1b[<0;12;7m")?.pressed).toBe(false);
+    expect(parseMouseEvent("\x1b[<64;2;3M")?.button).toBe(64);
+  });
+
+  test("rejects incomplete or unrelated input", () => {
+    expect(parseMouseEvent("\x1b[<0;12M")).toBeNull();
+    expect(parseMouseEvent("j")).toBeNull();
   });
 });
 
