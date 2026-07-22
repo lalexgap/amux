@@ -251,7 +251,7 @@ export function startDaemonServer(socketPath: string = daemonSocket()): DaemonHa
     }
     for (const agent of listAgents()) {
       if (agent.status !== "exited" && !hasSession(agent.tmuxSession)) {
-        setStatus(agent.name, "exited");
+        setStatus(agent.name, "exited", "tmux session disappeared");
         continue;
       }
       if (agent.status === "idle" && queueDepth(agent.name) > 0) {

@@ -8,7 +8,7 @@ import { hasSession, killSession } from "../tmux";
 // The SessionEnd hook never fires for a killed session, so mark it ourselves.
 export function stopAgent(agent: AgentState): void {
   if (hasSession(agent.tmuxSession)) killSession(agent.tmuxSession);
-  setStatus(agent.name, "exited");
+  setStatus(agent.name, "exited", "stopped by operator");
 }
 
 export function destroyAgent(agent: AgentState, opts: { clean: boolean }): void {

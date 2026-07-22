@@ -1,4 +1,4 @@
-import { matchAgent, writeAgent, type AgentStatus } from "../state";
+import { matchAgent, updateAgentStatus, writeAgent, type AgentStatus } from "../state";
 import { queueAppend, queueDepth, queuePop } from "../queue";
 import { acquireDeliverLock, deliverNext, releaseDeliverLock, spawnDeliver } from "../deliver";
 import { notifyDaemon } from "../daemon";
@@ -27,6 +27,7 @@ export function formatDuration(seconds: number): string {
 
 export interface HookEffects {
   status: AgentStatus;
+  reason?: string;
   notify?: string;
   drainQueue?: boolean;
 }
@@ -50,16 +51,17 @@ export function hookEffects(event: string, payload: Record<string, unknown>): Ho
       // isn't "needs attention" — treating it as such would make sends queue
       // forever (no turn → no Stop hook to drain them).
       if (/waiting for .*input/i.test(message)) return { status: "idle" };
-      return { status: "needs-attention", notify: message };
+      return { status: "needs-attention", reason: message, notify: message };
     }
     // Codex's dedicated approval event (PermissionRequest) — unlike Claude's
     // Notification, it only ever means "waiting on the user".
     case "permission-request": {
       const tool = typeof payload.tool_name === "string" ? ` — ${payload.tool_name}` : "";
-      return { status: "needs-attention", notify: `approval requested${tool}` };
+      const message = `approval requested${tool}`;
+      return { status: "needs-attention", reason: message, notify: message };
     }
     case "session-end":
-      return { status: "exited" };
+      return { status: "exited", reason: "session ended" };
     default:
       throw new Error(`unknown hook event: ${event}`);
   }
@@ -192,7 +194,7 @@ export async function hookCommand(event: string): Promise<void> {
       // in between, so refresh the canonical state before writing.
       agent = matchAgent(inheritedName) ?? agent;
       name = agent.name;
-      agent.status = "working"; // still active — it's continuing to handle messages
+      updateAgentStatus(agent, "working"); // still active — it's continuing to handle messages
       if (!agent.workingSince) agent.workingSince = new Date().toISOString();
       writeAgent(agent);
       process.stdout.write(gate);
@@ -207,7 +209,7 @@ export async function hookCommand(event: string): Promise<void> {
     ? Math.max(0, (Date.now() - Date.parse(workingSince)) / 1000)
     : 0;
 
-  agent.status = effects.status;
+  updateAgentStatus(agent, effects.status, effects.reason);
   if (typeof payload.session_id === "string") agent.sessionId = payload.session_id;
   // Codex includes the rollout file path; saves `am transcript` a search.
   if (typeof payload.transcript_path === "string") agent.transcriptPath = payload.transcript_path;

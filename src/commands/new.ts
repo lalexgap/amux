@@ -150,6 +150,8 @@ export async function newCommand(opts: NewOptions): Promise<void> {
   const state: AgentState = {
     name,
     status: "starting",
+    statusReason: "launching",
+    statusChangedAt: now,
     dir,
     tmuxSession: session,
     provider,

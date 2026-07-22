@@ -39,6 +39,7 @@ import { daemonCommand } from "./commands/daemon";
 import { serveCommand, tokenCommand } from "./commands/serve";
 import { showPalettePopup, sidebarCommand, uiCommand } from "./commands/ui";
 import { watchCommand } from "./commands/watch";
+import { summaryCommand } from "./commands/summary";
 import { deliverCommand } from "./deliver";
 import { runForegroundDaemon } from "./daemon";
 import { runTunnel } from "./tunnel";
@@ -77,6 +78,8 @@ usage:
                               am ls unless --rm; exit 1 if blocked/timed out)
   am resume <name> [-m msg]   restart an exited agent, resuming its conversation
   am ls [--json]              list agents with status and queue depth
+  am summary [--json]         prioritized fleet report: attention, active,
+                              idle, exited, and unreachable hosts
   am send <name> <msg...>     queue a message, delivered when agent goes idle
   am send <name> <msg> --now  type it into the session immediately (steer)
   am send <name> -            read the message body from stdin (no shell quoting
@@ -491,6 +494,9 @@ async function main(): Promise<void> {
     case "ls":
     case "list":
       lsCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
+      break;
+    case "summary":
+      summaryCommand({ json: !!args.flags.json, localOnly: !!args.flags["local-only"] });
       break;
     case "j":
     case "jump":

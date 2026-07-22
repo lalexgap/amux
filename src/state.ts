@@ -19,6 +19,13 @@ export interface AgentState {
   // making aliases participate in fuzzy prefix matching.
   aliases?: string[];
   status: AgentStatus;
+  // Human-readable explanation for the current status. Most useful for
+  // needs-attention (for example, the permission/tool that is blocked).
+  // Cleared whenever a later transition has no reason.
+  statusReason?: string;
+  // Unlike updatedAt (which changes for session metadata and other writes),
+  // this only changes when status or its reason changes.
+  statusChangedAt?: string;
   dir: string;
   tmuxSession: string;
   // Absent in state files written before multi-provider support → claude.
@@ -92,10 +99,28 @@ export function writeAgent(state: AgentState): void {
   writeJsonAtomic(stateFile(state.name), state);
 }
 
-export function setStatus(name: string, status: AgentStatus): void {
+export function updateAgentStatus(
+  state: AgentState,
+  status: AgentStatus,
+  reason?: string,
+  now: string = new Date().toISOString(),
+): void {
+  const statusReason = reason?.trim() || undefined;
+  if (state.status !== status || state.statusReason !== statusReason) {
+    state.statusChangedAt = now;
+  } else if (!state.statusChangedAt) {
+    // Old state files predate transition timestamps. Preserve the best
+    // historical approximation until the next real transition.
+    state.statusChangedAt = state.updatedAt || now;
+  }
+  state.status = status;
+  state.statusReason = statusReason;
+}
+
+export function setStatus(name: string, status: AgentStatus, reason?: string): void {
   const state = readAgent(name);
   if (!state) return;
-  state.status = status;
+  updateAgentStatus(state, status, reason);
   writeAgent(state);
 }
 
