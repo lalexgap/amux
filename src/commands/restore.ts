@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { readAgent, writeAgent } from "../state";
+import { readAgent, updateAgentStatus, writeAgent } from "../state";
 import { listTrashed, readTrashedState } from "../trash";
 import { reviveAgent } from "./resume";
 
@@ -37,7 +37,7 @@ export async function restoreCommand(name: string | undefined, opts: { resume?: 
     else console.error(`warning: could not recreate worktree: ${res.stderr.toString().trim()}`);
   }
 
-  state.status = "exited";
+  updateAgentStatus(state, "exited", "restored; not running");
   state.workingSince = undefined;
   writeAgent(state);
   console.log(`restored agent "${name}" (removed ${trashedAt})`);

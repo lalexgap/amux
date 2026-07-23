@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { agentProvider, resolveAgent, writeAgent, type AgentState } from "../state";
+import { agentProvider, resolveAgent, updateAgentStatus, writeAgent, type AgentState } from "../state";
 import { hasSession, newSession } from "../tmux";
 import { ensureDaemon } from "../daemon";
 import { queueAppend } from "../queue";
@@ -30,7 +30,7 @@ export async function reviveAgent(
     env: agentEnv(agent.name),
     command: scrubNestedSessionEnv(plan.command),
   });
-  agent.status = "starting";
+  updateAgentStatus(agent, "starting", "resuming");
   writeAgent(agent);
 }
 

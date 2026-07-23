@@ -7,6 +7,7 @@ import {
   listAgents,
   readAgent,
   resolveAgent,
+  updateAgentStatus,
   writeAgent,
   type AgentState,
 } from "../state";
@@ -150,7 +151,9 @@ export function importPayload(raw: string): string {
   if (!state?.name || !state.dir || !state.tmuxSession) throw new Error("malformed move payload");
   if (readAgent(state.name)) throw new Error(`agent "${state.name}" already exists here`);
   if (!existsSync(state.dir)) throw new Error(`target dir does not exist: ${state.dir}`);
-  writeAgent({ ...state, status: "exited", workingSince: undefined });
+  const imported = { ...state, workingSince: undefined };
+  updateAgentStatus(imported, "exited", "moved from another host");
+  writeAgent(imported);
   for (const message of payload.queue ?? []) queueAppend(state.name, message);
   return state.name;
 }
@@ -345,17 +348,18 @@ async function pushAgent(name: string, host: string, opts: MoveOptions): Promise
     if (agentProvider(agent) === "codex") remoteTranscriptPath = target;
   }
 
+  const movedState: AgentState = {
+    ...agent,
+    dir: storedDir,
+    workingSince: undefined,
+    transcriptPath: remoteTranscriptPath,
+    worktreePath: targetWorktree?.path,
+    worktreeBranch: targetWorktree?.branch,
+    repoRoot: targetWorktree?.repoRoot,
+  };
+  updateAgentStatus(movedState, "exited", "moved to another host");
   const payload: MovePayload = {
-    state: {
-      ...agent,
-      dir: storedDir,
-      status: "exited",
-      workingSince: undefined,
-      transcriptPath: remoteTranscriptPath,
-      worktreePath: targetWorktree?.path,
-      worktreeBranch: targetWorktree?.branch,
-      repoRoot: targetWorktree?.repoRoot,
-    },
+    state: movedState,
     queue: [
       migrationBrief({
         from: hostname(),
@@ -632,7 +636,7 @@ export async function cdAgent(
   agent.worktreePath = worktree?.path;
   agent.worktreeBranch = worktree?.branch;
   agent.repoRoot = worktree?.repoRoot;
-  agent.status = "exited";
+  updateAgentStatus(agent, "exited", "directory changed; not running");
   agent.workingSince = undefined;
   writeAgent(agent);
   queueAppend(agent.name, dirChangeBrief(oldDir, dir));

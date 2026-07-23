@@ -9,7 +9,7 @@ import {
   parseMoveSpec,
   targetTranscriptPath,
 } from "../src/commands/move";
-import { fleetKey, sortFleetRows, splitFleetKey, shortHost } from "../src/fleet";
+import { fleetKey, sidebarStatus, sortFleetRows, splitFleetKey, shortHost } from "../src/fleet";
 import { readAgent, type AgentState } from "../src/state";
 import { queueList } from "../src/queue";
 
@@ -76,6 +76,18 @@ describe("fleet keys", () => {
     expect(splitFleetKey("home.alexgap.ca:demo")).toEqual({ host: "home.alexgap.ca", name: "demo" });
     expect(splitFleetKey("demo")).toEqual({ name: "demo" });
     expect(shortHost("home.alexgap.ca")).toBe("home");
+  });
+});
+
+describe("sidebar status labels", () => {
+  test("shows every operational state explicitly", () => {
+    expect(sidebarStatus("starting")).toBe("starting");
+    expect(sidebarStatus("working")).toBe("working");
+    expect(sidebarStatus("waiting")).toBe("waiting");
+    expect(sidebarStatus("idle")).toBe("idle");
+    expect(sidebarStatus("needs-attention")).toBe("needs you");
+    expect(sidebarStatus("exited")).toBe("exited");
+    expect(sidebarStatus("dead")).toBe("dead");
   });
 });
 

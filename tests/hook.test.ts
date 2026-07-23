@@ -25,6 +25,7 @@ describe("hookEffects", () => {
     });
     expect(effects.status).toBe("needs-attention");
     expect(effects.notify).toContain("permission");
+    expect(effects.reason).toContain("permission");
   });
 
   test("idle-timeout notification stays idle and does not notify", () => {
@@ -38,6 +39,7 @@ describe("hookEffects", () => {
   test("codex permission-request flags needs-attention with the tool name", () => {
     expect(hookEffects("permission-request", { tool_name: "shell" })).toMatchObject({
       status: "needs-attention",
+      reason: "approval requested — shell",
       notify: "approval requested — shell",
     });
     expect(hookEffects("permission-request", {}).notify).toBe("approval requested");

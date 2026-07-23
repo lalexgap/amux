@@ -42,6 +42,7 @@ am new gpt-take --codex --no-jump                # use Codex, stay in the hub
 
 am                         # open the hub
 am ls                      # list agents (--json for scripts)
+am summary                 # prioritized attention/active/idle fleet report
 am j api                   # jump by name prefix
 am -                       # return to the previous agent
 ```

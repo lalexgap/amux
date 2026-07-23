@@ -193,6 +193,8 @@ export function shortenHome(path: string): string {
 export interface AgentRow {
   name: string;
   status: DisplayStatus;
+  statusReason?: string;
+  statusChangedAt?: string;
   provider: Provider;
   queued: number;
   updatedAt: string;

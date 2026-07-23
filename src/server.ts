@@ -4,7 +4,8 @@ import { apiTokenFile, ensureDirs } from "./paths";
 import { loadConfig } from "./config";
 import { agentProvider, readAgent, resolveAgent } from "./state";
 import { cachedFleetRows } from "./fleet";
-import { displayStatus } from "./commands/ls";
+import { displayStatus, waitingInfo } from "./commands/ls";
+import { buildFleetSummary } from "./summary";
 import { queueList } from "./queue";
 import { capturePane, hasSession } from "./tmux";
 import { sendCommand, interruptCommand } from "./commands/send";
@@ -84,9 +85,16 @@ You can uninstall this icon.</p>
 function agentDetail(name: string) {
   const agent = readAgent(name);
   if (!agent) return null;
+  const status = displayStatus(agent);
   return {
     name: agent.name,
-    status: displayStatus(agent),
+    status,
+    statusReason: status === "waiting"
+      ? waitingInfo(agent).detail ?? null
+      : status === "dead"
+        ? "tmux session is missing"
+        : agent.statusReason ?? null,
+    statusChangedAt: agent.statusChangedAt ?? agent.updatedAt,
     provider: agentProvider(agent),
     dir: agent.dir,
     task: agent.task ?? null,
@@ -114,6 +122,11 @@ async function handleApi(req: Request, parts: string[]): Promise<Response> {
   if (parts.length === 1 && parts[0] === "agents" && method === "GET") {
     const fleet = cachedFleetRows();
     return json({ rows: fleet.rows, unreachable: fleet.unreachable });
+  }
+
+  // GET /api/summary — the same prioritized fleet report as `am summary`.
+  if (parts.length === 1 && parts[0] === "summary" && method === "GET") {
+    return json(buildFleetSummary(cachedFleetRows()));
   }
 
   // GET /api/events — authenticated proxy of the daemon's fleet event stream.

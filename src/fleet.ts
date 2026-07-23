@@ -264,20 +264,16 @@ const MUTED = "\x1b[38;2;86;95;137m";
 const BLUE = "\x1b[38;2;122;162;247m";
 const PURPLE = "\x1b[38;2;187;154;247m";
 
-function compactAge(iso: string): string {
-  return relativeTime(iso).replace(/ ago$/, "");
-}
-
-function activityFor(row: FleetRow): string {
-  if (row.status === "needs-attention") return "needs you";
-  // The dimmed row already says "idle"; the age alone keeps columns tight.
-  return compactAge(row.updatedAt);
-}
-
-function detailStatus(status: AgentRow["status"]): string {
+export function sidebarStatus(status: AgentRow["status"]): string {
   if (status === "needs-attention") return "needs you";
-  if (status === "working" || status === "starting") return "running";
   return status;
+}
+
+function sidebarStatusStyle(status: AgentRow["status"]): string {
+  if (status === "working") return GREEN;
+  if (status === "waiting" || status === "needs-attention") return AMBER;
+  if (status === "exited" || status === "dead") return RED;
+  return MUTED;
 }
 
 function diffDetail(row: FleetRow): string {
@@ -312,11 +308,12 @@ export function fleetPickerItems(): PickerItem[] {
       icon: STATUS_ICONS[r.status],
       iconStyle: STATUS_COLORS[r.status],
       status: r.status,
-      statusLabel: detailStatus(r.status),
+      statusLabel: sidebarStatus(r.status),
       label: r.name,
       labelStyle: r.status === "needs-attention" ? AMBER : r.status === "idle" ? MUTED : FG,
-      right: activityFor(r),
-      rightStyle: r.status === "needs-attention" ? AMBER : MUTED,
+      right: sidebarStatus(r.status),
+      rightStyle: sidebarStatusStyle(r.status),
+      rightSelectedStyle: sidebarStatusStyle(r.status),
       badge: r.provider === "codex" ? "cdx" : "cld",
       badgeStyle: r.provider === "codex" ? MUTED : PURPLE,
       badgeSelectedStyle: r.provider === "codex" ? BLUE : PURPLE,
@@ -326,6 +323,8 @@ export function fleetPickerItems(): PickerItem[] {
         `host     ${r.host ?? "local"}`,
         `provider ${r.provider}`,
         r.worktreeBranch ? `branch   ${r.worktreeBranch}` : `dir      ${shortenHome(r.dir)}`,
+        `reason   ${r.status === "waiting" ? (r.statusDetail ?? "—") : (r.statusReason ?? "—")}`,
+        `since    ${relativeTime(r.statusChangedAt ?? r.updatedAt)}`,
         `diff     ${diffDetail(r)}`,
         `updated  ${relativeTime(r.updatedAt)}${r.diff?.dirty ? ` ${MUTED}· uncommitted${FG}` : ""}`,
       ],

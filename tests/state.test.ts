@@ -11,6 +11,7 @@ import {
   resolveAgentName,
   resolveAgent,
   setStatus,
+  updateAgentStatus,
   writeAgent,
   type AgentState,
 } from "../src/state";
@@ -52,10 +53,30 @@ describe("agent state", () => {
     expect(listAgents().map((a) => a.name)).toEqual(["beta"]);
   });
 
-  test("setStatus updates status and timestamp", () => {
+  test("setStatus updates status, reason, and transition timestamp", () => {
     writeAgent(makeAgent("alpha"));
-    setStatus("alpha", "working");
-    expect(readAgent("alpha")?.status).toBe("working");
+    setStatus("alpha", "needs-attention", "approval requested — shell");
+    expect(readAgent("alpha")).toMatchObject({
+      status: "needs-attention",
+      statusReason: "approval requested — shell",
+    });
+    expect(readAgent("alpha")?.statusChangedAt).toBeTruthy();
+  });
+
+  test("a new transition clears a stale reason", () => {
+    const state = makeAgent("alpha");
+    updateAgentStatus(state, "needs-attention", "permission requested", "2026-01-01T00:01:00Z");
+    updateAgentStatus(state, "working", undefined, "2026-01-01T00:02:00Z");
+    expect(state.status).toBe("working");
+    expect(state.statusReason).toBeUndefined();
+    expect(state.statusChangedAt).toBe("2026-01-01T00:02:00Z");
+  });
+
+  test("repeated status writes preserve the original transition time", () => {
+    const state = makeAgent("alpha");
+    updateAgentStatus(state, "working", undefined, "2026-01-01T00:01:00Z");
+    updateAgentStatus(state, "working", undefined, "2026-01-01T00:02:00Z");
+    expect(state.statusChangedAt).toBe("2026-01-01T00:01:00Z");
   });
 
   test("setStatus on unknown agent is a no-op", () => {

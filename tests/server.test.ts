@@ -87,6 +87,16 @@ describe("agents api", () => {
     expect(data.unreachable).toEqual([]);
   });
 
+  test("GET /api/summary returns the prioritized fleet report", async () => {
+    seedAgent("alpha", "working");
+    const res = await fetch(url("/api/summary"), auth());
+    const data = (await res.json()) as any;
+    expect(data.totalAgents).toBe(1);
+    // There is no tmux session in this fixture, so the derived dead status is
+    // correctly promoted into the attention section.
+    expect(data.attention[0]).toMatchObject({ name: "alpha", status: "dead" });
+  });
+
   test("GET /api/agents/:name returns detail + queue", async () => {
     seedAgent("beta");
     queueAppend("beta", "hello");
@@ -96,6 +106,8 @@ describe("agents api", () => {
     expect(data.queue).toHaveLength(1);
     expect(data.queue[0].message).toBe("hello");
     expect(data.pane).toBeNull(); // no live session
+    expect(data.statusReason).toBe("tmux session is missing");
+    expect(data.statusChangedAt).toBeTruthy();
   });
 
   test("GET detail 404s for unknown agent", async () => {
